@@ -11,7 +11,14 @@ export interface QuotaSample {
 export interface HistoryPoint extends QuotaSample {
   segment: string;
 }
+export interface SessionCounts {
+  working: number;
+  unreadCompleted: number | null;
+  observedAt: number;
+}
 export interface AppSnapshot {
+  sessions: SessionCounts | null;
+  sessionError: string | null;
   quota: QuotaSample | null;
   status: 'connecting' | 'online' | 'offline';
   error: string | null;

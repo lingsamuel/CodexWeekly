@@ -6,12 +6,13 @@ const params = new URLSearchParams(window.location.search);
 export const demoMode = params.get('demo') === '1';
 export const desktopMode = isTauri();
 export const initialSnapshot: AppSnapshot = {
-  quota: null, status: 'connecting', error: null, locked: false, overlayVisible: true,
-  settings: { distro: '', pollIntervalSecs: 60 }, version: '0.1.1',
+  sessions: null, sessionError: null, quota: null, status: 'connecting', error: null, locked: false, overlayVisible: true,
+  settings: { distro: '', pollIntervalSecs: 60 }, version: '0.1.2',
 };
 const now = Math.floor(Date.now() / 1000);
 let demoSnapshot: AppSnapshot = {
   ...initialSnapshot, status: 'online',
+  sessions: { working: 4, unreadCompleted: 2, observedAt: now },
   quota: { recordedAt: now, remainingPercent: 73, resetsAt: now + 60 * 60 * 24 * 3, windowMinutes: 10080 },
 };
 const demoListeners = new Set<(snapshot: AppSnapshot) => void>();
@@ -76,4 +77,10 @@ export async function beginDrag(): Promise<void> {
 }
 export async function openDashboard(): Promise<void> {
   if (!demoMode) return command('open_dashboard');
+}
+
+/** 浏览器与演示模式只做离屏验证，不向桌面托盘写入。 */
+export async function setTrayImage(rgba: Uint8ClampedArray): Promise<void> {
+  if (demoMode || !desktopMode) return;
+  await command('set_tray_image', { rgba: Array.from(rgba) });
 }

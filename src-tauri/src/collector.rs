@@ -21,17 +21,22 @@ fn wsl_command(settings: &Settings) -> Command {
     command
 }
 
+pub(crate) fn bridge_command(settings: &Settings, mode: &str) -> Command {
+    let mut command = wsl_command(settings);
+    command.args([
+        "--exec",
+        "python3",
+        "-u",
+        "-c",
+        BRIDGE,
+        mode,
+        "--restore-shell-environment",
+    ]);
+    command
+}
+
 pub async fn fetch(settings: &Settings) -> Result<ParsedQuota, String> {
-    let mut child = wsl_command(settings)
-        .args([
-            "--exec",
-            "python3",
-            "-u",
-            "-c",
-            BRIDGE,
-            "--watch-parent",
-            "--restore-shell-environment",
-        ])
+    let mut child = bridge_command(settings, "--watch-parent")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

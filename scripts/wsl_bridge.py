@@ -138,7 +138,7 @@ def query(command, timeout=18, watch_parent=False):
                 os.kill(os.getpid(), signal.SIGTERM)
             threading.Thread(target=parent_closed, daemon=True).start()
         send({"id": 1, "method": "initialize", "params": {"clientInfo": {
-            "name": "codex_weekly_overlay", "title": "Codex Weekly Overlay", "version": "0.1.1"}}})
+            "name": "codex_weekly_overlay", "title": "Codex Weekly Overlay", "version": "0.1.2"}}})
         receive(1)
         send({"method": "initialized", "params": {}})
         send({"id": 2, "method": "account/rateLimits/read"})
@@ -174,6 +174,11 @@ def main():
     try:
         if '--restore-shell-environment' in sys.argv:
             load_shell_environment()
+        if '--daemon-proxy' in sys.argv:
+            # 控制套接字使用 WebSocket；保持原始字节，由 Windows 的成熟协议库握手。
+            # exec 不启动/停止 daemon，关闭此代理也不会干扰用户的会话。
+            command = locate_codex()
+            os.execvpe(command[0], [command[0], 'app-server', 'proxy'], os.environ)
         print(json.dumps({"result": query(locate_codex(), watch_parent="--watch-parent" in sys.argv)}, ensure_ascii=False), flush=True)
     except BridgeError as error:
         print(json.dumps({"error": str(error)}, ensure_ascii=False), flush=True)

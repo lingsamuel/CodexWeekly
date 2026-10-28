@@ -25,3 +25,16 @@ export function splitHistory(points: HistoryPoint[]): HistoryPoint[][] {
   }
   return groups;
 }
+
+/** 只提示同一已知额度窗口内的采样间隙；保留端点，不插入虚构读数。 */
+export function historyBridges(groups: HistoryPoint[][]): [HistoryPoint, HistoryPoint][] {
+  const bridges: [HistoryPoint, HistoryPoint][] = [];
+  for (let index = 1; index < groups.length; index++) {
+    const previous = groups[index - 1].at(-1);
+    const next = groups[index][0];
+    if (previous && next && previous.resetsAt !== null && Number.isFinite(previous.resetsAt)
+      && previous.resetsAt === next.resetsAt && next.remainingPercent <= previous.remainingPercent
+      && next.recordedAt > previous.recordedAt) bridges.push([previous, next]);
+  }
+  return bridges;
+}

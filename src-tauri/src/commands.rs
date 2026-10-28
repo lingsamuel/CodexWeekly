@@ -47,12 +47,15 @@ pub fn update_settings(
     data.preferences = preferences;
     if changed_distro {
         data.quota = None;
+        data.sessions = None;
+        data.session_error = None;
     }
     data.status = "connecting";
     data.error = None;
     data.next_sample_starts_segment = true;
     drop(data);
     state.refresh.notify_one();
+    state.activity_refresh.notify_one();
     broadcast(&app);
     state.snapshot()
 }
@@ -101,4 +104,14 @@ pub fn open_dashboard(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn list_distros() -> Result<Vec<String>, String> {
     collector::list_distros().await
+}
+
+#[tauri::command]
+pub fn set_tray_image(rgba: Vec<u8>, app: AppHandle) -> Result<(), String> {
+    if rgba.len() != 64 * 64 * 4 {
+        return Err("托盘图像必须为 64×64 RGBA。".into());
+    }
+    let tray = app.tray_by_id("main").ok_or("托盘尚未创建。")?;
+    tray.set_icon(Some(tauri::image::Image::new_owned(rgba, 64, 64)))
+        .map_err(|_| "更新托盘余量图标失败。".into())
 }

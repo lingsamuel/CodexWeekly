@@ -1,5 +1,6 @@
 #![cfg(windows)]
 
+mod activity;
 mod collector;
 mod commands;
 mod state;
@@ -12,6 +13,36 @@ use std::sync::Mutex;
 use tauri::{Manager, RunEvent};
 
 pub fn run() {
+    if let Some(path) = std::env::args()
+        .skip(1)
+        .collect::<Vec<_>>()
+        .windows(2)
+        .find(|args| args[0] == "--diagnose-sessions")
+        .map(|args| args[1].clone())
+    {
+        let result = tauri::async_runtime::block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(35), async {
+                activity::ActivityClient::connect(&Settings::default())
+                    .await?
+                    .fetch_counts()
+                    .await
+            })
+            .await
+            .unwrap_or_else(|_| Err("读取 Codex 会话统计超时。".into()))
+        });
+        let report = match &result {
+            Ok(counts) => {
+                serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"ok":true,"sessions":counts})
+            }
+            Err(error) => {
+                serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"ok":false,"error":error})
+            }
+        };
+        if std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).is_err() {
+            std::process::exit(2);
+        }
+        std::process::exit(if result.is_ok() { 0 } else { 1 });
+    }
     if let Some(path) = std::env::args()
         .skip(1)
         .collect::<Vec<_>>()
@@ -47,7 +78,8 @@ pub fn run() {
             commands::set_overlay_visible,
             commands::begin_drag,
             commands::open_dashboard,
-            commands::list_distros
+            commands::list_distros,
+            commands::set_tray_image
         ])
         .setup(|app| {
             let directory = app.path().app_data_dir()?;
@@ -65,8 +97,11 @@ pub fn run() {
                     status: "connecting",
                     error: None,
                     next_sample_starts_segment: true,
+                    sessions: None,
+                    session_error: None,
                 }),
                 refresh: tokio::sync::Notify::new(),
+                activity_refresh: tokio::sync::Notify::new(),
                 shutdown: tokio::sync::Notify::new(),
                 position_save_pending: std::sync::atomic::AtomicBool::new(false),
             });
@@ -76,6 +111,7 @@ pub fn run() {
                 windows::open_dashboard(app.handle())?;
             }
             collector::start(app.handle().clone());
+            activity::start(app.handle().clone());
             Ok(())
         })
         .build(tauri::generate_context!())

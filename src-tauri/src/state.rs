@@ -1,4 +1,5 @@
 use limit_core::{
+    activity::SessionCounts,
     quota::{ParsedQuota, QuotaSample},
     settings::{Preferences, Settings},
     store::Store,
@@ -11,6 +12,7 @@ use tokio::sync::Notify;
 pub struct AppState {
     pub data: Mutex<AppData>,
     pub refresh: Notify,
+    pub activity_refresh: Notify,
     pub shutdown: Notify,
     pub position_save_pending: std::sync::atomic::AtomicBool,
 }
@@ -22,6 +24,8 @@ pub struct AppData {
     pub status: &'static str,
     pub error: Option<String>,
     pub next_sample_starts_segment: bool,
+    pub sessions: Option<SessionCounts>,
+    pub session_error: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -34,6 +38,8 @@ pub struct AppSnapshot {
     pub overlay_visible: bool,
     pub settings: Settings,
     pub version: &'static str,
+    pub sessions: Option<SessionCounts>,
+    pub session_error: Option<String>,
 }
 
 impl AppState {
@@ -53,6 +59,8 @@ impl AppState {
             overlay_visible: data.preferences.overlay_visible,
             settings: data.preferences.settings.clone(),
             version: env!("CARGO_PKG_VERSION"),
+            sessions: data.sessions.clone(),
+            session_error: data.session_error.clone(),
         })
     }
 }
