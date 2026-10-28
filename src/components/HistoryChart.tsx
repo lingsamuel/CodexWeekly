@@ -3,7 +3,7 @@ import type { KeyboardEvent, PointerEvent } from 'react';
 import { area, curveBasis, line } from 'd3-shape';
 import type { HistoryPoint } from '../lib/types';
 import { historyDomain, orderedHistory } from '../lib/history';
-import { dateTime, percent } from '../lib/format';
+import { dateTime } from '../lib/format';
 import { Icon } from './Icon';
 
 const width = 900;
@@ -67,7 +67,7 @@ export function HistoryChart({ points, hours, loading }: { points: HistoryPoint[
     </svg>
     {validPoints.length === 1 && <p className="chart-hint" role="status">已有 1 次采样，下一次成功同步后会绘制连续曲线。</p>}
     <div id={`${id}-detail`} role="status" aria-live="polite" className={`chart-tooltip ${selected ? 'is-visible' : ''}`} style={{ left: selected ? `${Math.max(17, Math.min(83, x(selected.recordedAt) / width * 100))}%` : '50%' }}>
-      {selected && <><span>{dateTime(selected.recordedAt, true)}</span><strong>剩余 {percent(selected.remainingPercent)}%</strong></>}
+      {selected && <><span>{dateTime(selected.recordedAt, true)}</span><strong>剩余 {selected.remainingPercent.toFixed(1)}%</strong></>}
     </div>
   </div>;
 }
