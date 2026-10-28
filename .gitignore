@@ -4,6 +4,7 @@
 /artifacts/
 /playwright-report/
 /test-results/
+/src-tauri/gen/
 __pycache__/
 *.pyc
 .DS_Store

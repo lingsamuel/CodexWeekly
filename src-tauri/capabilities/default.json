@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "desktop",
+  "description": "仅允许本地额度面板与悬浮窗使用事件和应用命令。",
+  "windows": ["dashboard", "overlay"],
+  "permissions": ["core:default"]
+}

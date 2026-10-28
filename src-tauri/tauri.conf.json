@@ -1,0 +1,25 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Codex Weekly",
+  "version": "0.1.0",
+  "identifier": "dev.lingsamuel.codexweeklyoverlay",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data:; connect-src ipc: http://ipc.localhost; font-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "shortDescription": "轻盈的 Codex 周额度悬浮窗",
+    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "windows": { "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true } }
+  }
+}

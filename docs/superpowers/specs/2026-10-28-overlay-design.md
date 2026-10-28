@@ -19,6 +19,8 @@ Windows 11 常驻额度悬浮窗，复用 WSL 的 Codex 登录，显示 Weekly �
 
 Windows Rust 后端使用 `wsl.exe` 在指定发行版执行内嵌的 Python 3 标准库桥接程序。桥接程序定位现有 Codex（包括 NVM 的 Node 路径），启动 `codex app-server`，通过 JSONL 执行 `initialize` → `initialized` → `account/rateLimits/read`，读完后关闭子进程。不复制、输出或向 Windows 暴露 OAuth 凭证，不创建对话或调用模型。
 
+Windows 实测补充：`wsl.exe --exec` 不加载交互 shell，可能同时丢失 NVM PATH 和代理。桥接在 WSL 内以当前用户 shell 获取环境，仅导入 PATH、CODEX_HOME、NVM_DIR 与代理变量白名单；其余变量不导入，也不把整个环境发往 Windows。shell 初始化最多 5 秒。
+
 默认使用 WSL 默认发行版，设置中可选择发行版；默认每 60 秒采样，可设置 30～3600 秒。手动刷新与定时任务共用单一采集入口，避免并行请求。空闲时没有常驻 Codex 子进程；一次采集有明确超时和进程回收。
 
 实测：本机 CLI 0.164.0 可通过已有登录读取周额度；`codex` 桶的 `primary.windowDurationMins = 10080`，`usedPercent = 27`。现有 0.165.0 daemon 的 proxy 握手未在探测期限内响应，因此首版采用已验证的独立 app-server，不依赖 daemon 内部控制协议。
@@ -30,6 +32,8 @@ Windows Rust 后端使用 `wsl.exe` 在指定发行版执行内嵌的 Python 3 �
 ## 存储和异常
 
 Windows 应用数据目录的 SQLite 保存采样、账号分组与设置。保留 90 天历史，图表按范围降采样并保留窗口重置分段。只存额度、时间、窗口及必要的账号隔离标识，不存凭证。数据库失败可见，不把未持久化状态报告为完整历史。
+
+分段在采集时持久化，包括服务重置、已知失败后的下一次成功、账号变更（含 A→B→A）、设置变更、重启与超过当时采样间隔三倍的缺口。修改当前刷新间隔不会重解释旧历史。Windows 父管道关闭时 WSL 桥接取消采集并回收整个 app-server 进程组；守护线程使用原始 fd 读取，避免 Python 退出时的缓冲锁冲突。
 
 连接失败保留上次有效读数并标记过期；启动没有历史时显示占位。重置时间过去也不能擅自推断额度变为 100%，等待服务返回。错误按 WSL/Codex 缺失、登录失效、协议不兼容、超时和一般连接失败分类，并提供可执行的恢复说明。
 
