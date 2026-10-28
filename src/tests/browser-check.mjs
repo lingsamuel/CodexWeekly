@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 // 仅运行 Linux headless；不连接 Windows CDP，也不产生系统输入。
 const cached = path.join(os.homedir(), '.cache/ms-playwright/chromium-1148/chrome-linux/chrome');
 const executablePath = process.env.CHROMIUM_EXECUTABLE ?? (existsSync(cached) ? cached : undefined);
-const output = process.env.BROWSER_CHECK_OUTPUT ?? '/tmp/codex-overlay-ui-012';
+const output = process.env.BROWSER_CHECK_OUTPUT ?? '/tmp/codex-overlay-ui-013';
 await fs.mkdir(output, { recursive: true });
 // 发布页只从 dist 加载，响应头使用当前 Tauri CSP，覆盖 Vite 开发模式看不到的限制。
 async function verifyProductionCsp(browser) {
@@ -90,7 +90,10 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   await page.goto('http://127.0.0.1:1420/?demo=1');
   await page.getByRole('img', { name: /最近 24 小时/ }).waitFor();
-  await page.evaluate(async () => {
+  assert.equal(await page.locator('.legend-gap').count(), 0);
+  assert.equal(await page.getByText('采样间隙', { exact: true }).count(), 0);
+  const historyFixture = process.env.BROWSER_HISTORY_FIXTURE ? JSON.parse(await fs.readFile(process.env.BROWSER_HISTORY_FIXTURE, 'utf8')) : null;
+  await page.evaluate(async historyFixture => {
     const reactModule = await import('/node_modules/.vite/deps/react.js');
     const React = reactModule.default ?? reactModule;
     const clientModule = await import('/node_modules/.vite/deps/react-dom_client.js');
@@ -103,15 +106,20 @@ try {
     document.body.append(container);
     const now = Math.floor(Date.now() / 1000);
     const offsets = [[0, 65, 'a'], [180, 65, 'a'], [240, 65, 'b'], [300, 65, 'b'], [360, 64, 'c'], [420, 64, 'd'], [540, 64, 'd'], [600, 64, 'e'], [780, 64, 'e'], [840, 64, 'f'], [960, 64, 'f'], [1200, 62, 'f'], [1440, 61, 'f'], [1500, 60, 'f'], [1560, 60, 'g'], [1740, 60, 'g']];
-    const points = offsets.map(([offset, remainingPercent, segment]) => ({ recordedAt: now - 1740 + offset, remainingPercent, segment, resetsAt: now + 86400, windowMinutes: 10080 }));
+    const points = historyFixture ?? offsets.map(([offset, remainingPercent, segment]) => ({ recordedAt: now - 1740 + offset, remainingPercent, segment, resetsAt: now + 86400, windowMinutes: 10080 }));
     createRoot(container).render(React.createElement(HistoryChart, { points, hours: 24, loading: false }));
+  }, historyFixture);
+  await page.locator('#gap-fixture .history-line').waitFor({ state: 'attached' });
+  assert.equal(await page.locator('#gap-fixture .history-line').count(), 1);
+  assert.equal(await page.locator('#gap-fixture .history-area').count(), 1);
+  assert.equal(await page.locator('#gap-fixture .history-gap').count(), 0);
+  assert.equal(await page.locator('#gap-fixture [stroke-dasharray]').count(), 0);
+  const continuousCheck = await page.locator('#gap-fixture .history-line').evaluate(path => {
+    const d = path.getAttribute('d');
+    return { moves: (d.match(/M/g) ?? []).length, cubic: d.includes('C'), solid: getComputedStyle(path).strokeDasharray === 'none' };
   });
-  await page.locator('#gap-fixture .history-gap').first().waitFor({ state: 'attached' });
-  assert.equal(await page.locator('#gap-fixture .history-gap').count(), 6);
-  assert.equal(await page.locator('#gap-fixture .history-line').count(), 6);
-  const bridgeCheck = await page.locator('#gap-fixture .history-gap').evaluateAll(paths => paths.every(path => path.getTotalLength() > 0 && getComputedStyle(path).strokeDasharray !== 'none'));
-  assert.equal(bridgeCheck, true);
-  await page.locator('#gap-fixture').screenshot({ path: path.join(output, 'history-gaps.png') });
+  assert.deepEqual(continuousCheck, { moves: 1, cubic: true, solid: true });
+  await page.locator('#gap-fixture').screenshot({ path: path.join(output, 'history-continuous.png') });
 
   await page.setViewportSize({ width: 176, height: 176 });
   await page.goto('http://127.0.0.1:1420/?view=overlay&demo=1');
@@ -201,5 +209,5 @@ try {
   assert.equal(await page.locator('.session-badge').count(), 0);
   assert.deepEqual(errors, []);
   const productionCsp = await verifyProductionCsp(browser);
-  console.log(JSON.stringify({ status: 'passed', productionCsp, bridges: 6, trayBytes: tray.length, darkCenter: tray.darkCenter, greenRing: tray.greenRing, abortedBlobRevoked: true, output }));
+  console.log(JSON.stringify({ status: 'passed', productionCsp, continuousPaths: 1, trayBytes: tray.length, darkCenter: tray.darkCenter, greenRing: tray.greenRing, abortedBlobRevoked: true, output }));
 } finally { await browser.close(); }

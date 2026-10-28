@@ -138,7 +138,7 @@ def query(command, timeout=18, watch_parent=False):
                 os.kill(os.getpid(), signal.SIGTERM)
             threading.Thread(target=parent_closed, daemon=True).start()
         send({"id": 1, "method": "initialize", "params": {"clientInfo": {
-            "name": "codex_weekly_overlay", "title": "Codex Weekly Overlay", "version": "0.1.2"}}})
+            "name": "codex_weekly_overlay", "title": "Codex Weekly Overlay", "version": "0.1.3"}}})
         receive(1)
         send({"method": "initialized", "params": {}})
         send({"id": 2, "method": "account/rateLimits/read"})

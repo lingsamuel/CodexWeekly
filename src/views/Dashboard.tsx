@@ -71,9 +71,9 @@ export function Dashboard() {
     </section>
 
     <section className="panel trend-panel" aria-label="额度变化趋势">
-      <div className="panel-heading"><div className="section-title"><h2>额度趋势</h2><span className="legend"><span />剩余额度</span><span className="legend legend-gap"><span />采样间隙</span>{historyLoading && history.length > 0 && <span className="loading-label" role="status">更新中</span>}</div><div className="range-control" role="group" aria-label="历史时间范围">{[{ hours: 24, label: '24 小时' }, { hours: 168, label: '7 天' }, { hours: 720, label: '30 天' }].map(range => <button key={range.hours} aria-pressed={hours === range.hours} onClick={() => { setHours(range.hours); setHistory([]); }}>{range.label}</button>)}</div></div>
+      <div className="panel-heading"><div className="section-title"><h2>额度趋势</h2><span className="legend"><span />剩余额度</span>{historyLoading && history.length > 0 && <span className="loading-label" role="status">更新中</span>}</div><div className="range-control" role="group" aria-label="历史时间范围">{[{ hours: 24, label: '24 小时' }, { hours: 168, label: '7 天' }, { hours: 720, label: '30 天' }].map(range => <button key={range.hours} aria-pressed={hours === range.hours} onClick={() => { setHours(range.hours); setHistory([]); }}>{range.label}</button>)}</div></div>
       {historyError ? <div className="chart-empty" role="alert"><Icon name="info" size={24} /><strong>历史记录暂时不可用</strong><p>{historyError}</p></div> : <HistoryChart points={history} hours={hours} loading={historyLoading} />}
-      <div className="chart-footer"><span><span className="tiny-dot" />{demoMode ? '演示数据 · 虚线表示采样间隙' : '真实采样 · 虚线仅连接同一窗口的间隙'}</span><span>时间均为本地时间</span></div>
+      <div className="chart-footer"><span><span className="tiny-dot" />{demoMode ? '演示数据 · 平滑趋势曲线' : '真实采样 · 平滑趋势曲线'}</span><span>时间均为本地时间</span></div>
     </section>
 
     <section className="panel settings-panel" aria-labelledby="settings-title">
