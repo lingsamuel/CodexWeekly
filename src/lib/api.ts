@@ -7,7 +7,7 @@ export const demoMode = params.get('demo') === '1';
 export const desktopMode = isTauri();
 export const initialSnapshot: AppSnapshot = {
   quota: null, status: 'connecting', error: null, locked: false, overlayVisible: true,
-  settings: { distro: '', pollIntervalSecs: 60 }, version: '0.1.0',
+  settings: { distro: '', pollIntervalSecs: 60 }, version: '0.1.1',
 };
 const now = Math.floor(Date.now() / 1000);
 let demoSnapshot: AppSnapshot = {

@@ -1,5 +1,13 @@
 import type { HistoryPoint } from './types.ts';
 
+/** 选择器限定查询范围；记录不足时展开真实采样跨度，避免短线被末端圆点遮住。 */
+export function historyDomain(points: HistoryPoint[], hours: number, now: number): { start: number; end: number } {
+  if (points.length === 0) return { start: now - hours * 3600, end: now };
+  const first = points.reduce((time, point) => Math.min(time, point.recordedAt), Infinity);
+  const end = points.reduce((time, point) => Math.max(time, point.recordedAt), now);
+  return { start: Math.min(end - 120, Math.max(end - hours * 3600, first)), end };
+}
+
 /** 后端在原始采样层识别重置与断线；前端保留分段，避免误判降采样间距。 */
 export function splitHistory(points: HistoryPoint[]): HistoryPoint[][] {
   const sorted = points.filter(point =>

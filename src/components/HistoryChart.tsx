@@ -1,7 +1,8 @@
 import { useId, useMemo, useState } from 'react';
 import type { KeyboardEvent, PointerEvent } from 'react';
+import { area, curveMonotoneX, line } from 'd3-shape';
 import type { HistoryPoint } from '../lib/types';
-import { splitHistory } from '../lib/history';
+import { historyDomain, splitHistory } from '../lib/history';
 import { dateTime, percent } from '../lib/format';
 import { Icon } from './Icon';
 
@@ -16,10 +17,20 @@ export function HistoryChart({ points, hours, loading }: { points: HistoryPoint[
   const groups = useMemo(() => splitHistory(points), [points]);
   const validPoints = useMemo(() => groups.flat(), [groups]);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
-  const end = Math.max(Date.now() / 1000, validPoints.at(-1)?.recordedAt ?? 0);
-  const start = end - hours * 3600;
+  const { start, end } = useMemo(() => historyDomain(validPoints, hours, Date.now() / 1000), [validPoints, hours]);
   const x = (time: number) => left + (time - start) / (end - start) * (width - left - right);
   const y = (value: number) => top + (100 - value) / 100 * (height - top - bottom);
+  const curves = useMemo(() => {
+    // 复用 D3 单调插值，经过采样值且不在两点之间制造额外的峰谷。
+    const stroke = line<HistoryPoint>().x(point => x(point.recordedAt)).y(point => y(point.remainingPercent)).curve(curveMonotoneX);
+    const fill = area<HistoryPoint>().x(point => x(point.recordedAt)).y0(y(0)).y1(point => y(point.remainingPercent)).curve(curveMonotoneX);
+    return groups.map(group => ({ group, stroke: stroke(group) ?? '', fill: fill(group) ?? '' }));
+  }, [groups, start, end]);
+  const timeLabel = (time: number) => end - start > 86400
+    ? new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' }).format(time * 1000)
+    : end - start <= 300
+      ? new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(time * 1000)
+      : dateTime(time);
   const selected = hoverIndex === null ? null : validPoints[Math.min(hoverIndex, validPoints.length - 1)];
   function selectNearest(event: PointerEvent<SVGSVGElement>) {
     const bounds = event.currentTarget.getBoundingClientRect();
@@ -43,21 +54,22 @@ export function HistoryChart({ points, hours, loading }: { points: HistoryPoint[
     <svg className="history-chart" viewBox={`0 0 ${width} ${height}`} role="img" tabIndex={0} aria-label={`最近 ${hours} 小时的额度曲线，共 ${validPoints.length} 个读数。使用左右方向键逐点查看。`} aria-describedby={`${id}-detail`} onPointerMove={selectNearest} onPointerLeave={() => setHoverIndex(null)} onKeyDown={navigate} onBlur={() => setHoverIndex(null)}>
       <defs><linearGradient id={`${id}-area`} x1="0" y1="0" x2="0" y2="1"><stop stopColor="#80cfad" stopOpacity=".23" /><stop offset="1" stopColor="#a8ddbb" stopOpacity=".015" /></linearGradient></defs>
       {[100, 75, 50, 25, 0].map(value => <g key={value}><line x1={left} y1={y(value)} x2={width - right} y2={y(value)} stroke="#e8eee6" strokeDasharray="3 5" /><text className="chart-axis" x={left - 12} y={y(value) + 4} textAnchor="end">{value}</text></g>)}
-      {groups.map((group, index) => {
-        const path = group.map((point, pointIndex) => `${pointIndex === 0 ? 'M' : 'L'}${x(point.recordedAt)},${y(point.remainingPercent)}`).join(' ');
+      {curves.map(({ group, stroke, fill }, index) => {
         const first = group[0], last = group[group.length - 1];
         return <g key={`${first.segment}-${index}`}>
-          {group.length > 1 && <path d={`${path} L${x(last.recordedAt)},${y(0)} L${x(first.recordedAt)},${y(0)} Z`} fill={`url(#${id}-area)`} />}
-          <path d={path} fill="none" stroke="#56ad8e" strokeWidth="2.4" strokeLinejoin="round" strokeLinecap="round" />
+          {group.length > 1 && <path className="history-area" d={fill} fill={`url(#${id}-area)`} />}
+          {group.length > 1 && <path className="history-line" d={stroke} fill="none" stroke="#56ad8e" strokeWidth="2.4" strokeLinejoin="round" strokeLinecap="round" />}
           <circle cx={x(last.recordedAt)} cy={y(last.remainingPercent)} r="3.8" fill="#58b18f" stroke="white" strokeWidth="2" />
         </g>;
       })}
       {[0, 1, 2, 3, 4].map(index => {
         const time = start + (end - start) * index / 4;
-        return <text key={index} className="chart-axis" x={x(time)} y={height - 6} textAnchor={index === 0 ? 'start' : index === 4 ? 'end' : 'middle'}>{hours > 24 ? new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric' }).format(time * 1000) : dateTime(time)}</text>;
+        return <text key={index} className="chart-axis" x={x(time)} y={height - 6} textAnchor={index === 0 ? 'start' : index === 4 ? 'end' : 'middle'}>{timeLabel(time)}</text>;
       })}
       {selected && <g><line x1={x(selected.recordedAt)} x2={x(selected.recordedAt)} y1={top} y2={y(0)} stroke="#8cb6a1" strokeDasharray="3 4" /><circle cx={x(selected.recordedAt)} cy={y(selected.remainingPercent)} r="5" fill="#459b7a" stroke="white" strokeWidth="2" /></g>}
     </svg>
+    {validPoints.length === 1 && <p className="chart-hint" role="status">已有 1 次采样，下一次成功同步后会绘制连续曲线。</p>}
+    {validPoints.length > 1 && groups.every(group => group.length === 1) && <p className="chart-hint" role="status">当前记录来自不同的采集时段；连续采样后会显示分段曲线。</p>}
     <div id={`${id}-detail`} role="status" aria-live="polite" className={`chart-tooltip ${selected ? 'is-visible' : ''}`} style={{ left: selected ? `${Math.max(17, Math.min(83, x(selected.recordedAt) / width * 100))}%` : '50%' }}>
       {selected && <><span>{dateTime(selected.recordedAt, true)}</span><strong>剩余 {percent(selected.remainingPercent)}%</strong></>}
     </div>

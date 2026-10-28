@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { splitHistory } from './history.ts';
+import { historyDomain, splitHistory } from './history.ts';
 import type { HistoryPoint } from './types.ts';
 const point = (recordedAt: number, remainingPercent = 73, segment = 'a'): HistoryPoint => ({ recordedAt, remainingPercent, segment, resetsAt: null, windowMinutes: 10080 });
 
@@ -15,4 +15,17 @@ test('长范围降采样不会被误判为断线', () => assert.equal(splitHisto
 test('非法时间与额度不进入图表', () => {
   const groups = splitHistory([point(NaN), point(0, Infinity), point(1, -1), point(2, 101), point(3, 0)]);
   assert.deepEqual(groups.map(group => group.map(p => p.remainingPercent)), [[0]]);
+});
+
+test('少量历史按真实记录范围展开，不压缩到整天横轴的末端', () => {
+  assert.deepEqual(historyDomain([point(99400), point(99940)], 24, 100000), { start: 99400, end: 100000 });
+});
+test('单点保留最少两分钟横轴跨度', () => {
+  assert.deepEqual(historyDomain([point(99990)], 24, 100000), { start: 99880, end: 100000 });
+});
+test('空数据仍使用所选时间范围', () => {
+  assert.deepEqual(historyDomain([], 24, 100000), { start: 13600, end: 100000 });
+});
+test('实际横轴不超出所选历史范围', () => {
+  assert.deepEqual(historyDomain([point(1), point(99940)], 24, 100000), { start: 13600, end: 100000 });
 });
