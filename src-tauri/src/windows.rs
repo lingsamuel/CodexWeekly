@@ -1,6 +1,9 @@
+use crate::overlay_geometry::{placement, WorkArea, OVERLAY_SIZE};
 use crate::state::{broadcast, AppState};
-use limit_core::settings::OverlayPosition;
-use tauri::{AppHandle, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{
+    AppHandle, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewUrl,
+    WebviewWindowBuilder,
+};
 
 // 仅按采样更新 SVG，软件合成可减少空闲 GPU 资源。
 // 同一 WebView2 环境内的窗口须保持一致参数，避免创建选项冲突。
@@ -33,7 +36,7 @@ pub fn create_overlay(app: &AppHandle) -> Result<(), String> {
     )
     .title("Codex Weekly Overlay")
     .additional_browser_args(RENDERER_ARGS)
-    .inner_size(176.0, 176.0)
+    .inner_size(OVERLAY_SIZE, OVERLAY_SIZE)
     .resizable(false)
     .decorations(false)
     .transparent(true)
@@ -45,75 +48,15 @@ pub fn create_overlay(app: &AppHandle) -> Result<(), String> {
     .visible(false)
     .build()
     .map_err(|error| error.to_string())?;
-    let saved = preferences.overlay_position;
-    let monitors = overlay
-        .available_monitors()
-        .map_err(|error| error.to_string())?;
-    let size = overlay.outer_size().map_err(|error| error.to_string())?;
-    let valid = saved.is_some_and(|point| {
-        monitors.iter().any(|monitor| {
-            let area = monitor.work_area();
-            point.x >= area.position.x
-                && point.y >= area.position.y
-                && i64::from(point.x) + i64::from(size.width)
-                    <= i64::from(area.position.x) + i64::from(area.size.width)
-                && i64::from(point.y) + i64::from(size.height)
-                    <= i64::from(area.position.y) + i64::from(area.size.height)
-        })
-    });
-    let position = if valid {
-        saved
-    } else {
-        overlay.primary_monitor().ok().flatten().map(|monitor| {
-            let area = monitor.work_area();
-            OverlayPosition {
-                x: area.position.x + area.size.width as i32 - size.width as i32 - 32,
-                y: area.position.y + 40,
-            }
-        })
-    };
-    if let Some(point) = position {
-        overlay
-            .set_position(PhysicalPosition::new(point.x, point.y))
-            .map_err(|error| error.to_string())?;
-    }
+    restore_overlay_geometry(app, false)?;
+    crate::overlay_recovery::install(app, &overlay)?;
     overlay
         .set_ignore_cursor_events(preferences.locked)
         .map_err(|error| error.to_string())?;
     if preferences.overlay_visible {
         overlay.show().map_err(|error| error.to_string())?;
     }
-    let handle = app.clone();
-    overlay.on_window_event(move |event| {
-        if let WindowEvent::Moved(position) = event {
-            let state = handle.state::<AppState>();
-            if let Ok(mut data) = state.lock() {
-                data.preferences.overlay_position = Some(OverlayPosition {
-                    x: position.x,
-                    y: position.y,
-                });
-            }
-            // 拖动可高频触发 Moved；合并写盘，避免每个鼠标事件都执行 SQLite I/O。
-            if !state
-                .position_save_pending
-                .swap(true, std::sync::atomic::Ordering::Relaxed)
-            {
-                let app = handle.clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-                    let state = app.state::<AppState>();
-                    if let Ok(mut data) = state.lock() {
-                        if data.store.save_preferences(&data.preferences).is_err() {
-                            data.error = Some("悬浮窗位置保存失败，请检查应用数据目录。".into());
-                        }
-                    }
-                    state
-                        .position_save_pending
-                        .store(false, std::sync::atomic::Ordering::Relaxed);
-                });
-            }
-        }
-    });
+
     Ok(())
 }
 
@@ -176,39 +119,108 @@ pub fn set_visible(app: &AppHandle, visible: bool) -> Result<(), String> {
     Ok(())
 }
 
-pub fn ensure_overlay_on_screen(app: &AppHandle) -> Result<(), String> {
+// 启动、主动显示与系统恢复共用几何策略；系统回退不写入用户位置。
+pub fn restore_overlay_geometry(app: &AppHandle, repaint: bool) -> Result<(), String> {
     let Some(overlay) = app.get_webview_window("overlay") else {
         return Ok(());
     };
-    let position = overlay
-        .outer_position()
-        .map_err(|error| error.to_string())?;
-    let size = overlay.outer_size().map_err(|error| error.to_string())?;
+    let preferences = app.state::<AppState>().lock()?.preferences.clone();
     let monitors = overlay
         .available_monitors()
         .map_err(|error| error.to_string())?;
-    let reachable = monitors.iter().any(|monitor| {
-        let area = monitor.work_area();
-        // 保留至少 48 个物理像素可见；允许用户将圆环跨放在两个显示器之间。
-        i64::from(position.x) + i64::from(size.width) >= i64::from(area.position.x) + 48
-            && i64::from(position.y) + i64::from(size.height) >= i64::from(area.position.y) + 48
-            && i64::from(position.x) + 48 <= i64::from(area.position.x) + i64::from(area.size.width)
-            && i64::from(position.y) + 48
-                <= i64::from(area.position.y) + i64::from(area.size.height)
-    });
-    if !reachable {
-        if let Some(monitor) = overlay
-            .primary_monitor()
-            .map_err(|error| error.to_string())?
-        {
+    let primary = overlay
+        .primary_monitor()
+        .map_err(|error| error.to_string())?;
+    let primary_index = monitors
+        .iter()
+        .position(|monitor| {
+            primary
+                .as_ref()
+                .is_some_and(|primary| monitor.position() == primary.position())
+        })
+        .unwrap_or(0);
+    let areas: Vec<_> = monitors
+        .iter()
+        .map(|monitor| {
             let area = monitor.work_area();
+            WorkArea {
+                x: area.position.x,
+                y: area.position.y,
+                width: area.size.width,
+                height: area.size.height,
+                scale: monitor.scale_factor(),
+            }
+        })
+        .collect();
+    let Some((point, (width, height))) =
+        placement(preferences.overlay_position, &areas, primary_index)
+    else {
+        return Ok(());
+    };
+    let position = PhysicalPosition::new(point.x, point.y);
+    let predicted_size = PhysicalSize::new(width, height);
+    let moved = overlay
+        .outer_position()
+        .map_err(|error| error.to_string())?
+        != position;
+    if moved {
+        overlay
+            .set_position(position)
+            .map_err(|error| error.to_string())?;
+    }
+    // 跨不同 DPI 的屏幕边缘时，以移动后 HWND 的真实 DPI 为准。
+    let scale = overlay.scale_factor().map_err(|error| error.to_string())?;
+    let logical = LogicalSize::new(OVERLAY_SIZE, OVERLAY_SIZE);
+    let size: PhysicalSize<u32> = logical.to_physical(scale);
+    let resized = overlay.inner_size().map_err(|error| error.to_string())? != size;
+    if resized {
+        overlay
+            .set_size(logical)
+            .map_err(|error| error.to_string())?;
+    }
+    // HWND 尺寸正确也不代表 WebView 客户区正确；显式恢复子窗口边界。
+    if repaint || moved || resized || predicted_size != size {
+        let size = overlay.inner_size().map_err(|error| error.to_string())?;
+        overlay
+            .as_ref()
+            .set_bounds(tauri::Rect {
+                position: PhysicalPosition::new(0, 0).into(),
+                size: size.into(),
+            })
+            .map_err(|error| error.to_string())?;
+        if repaint && preferences.overlay_visible {
+            let handle = app.clone();
             overlay
-                .set_position(PhysicalPosition::new(
-                    area.position.x + area.size.width as i32 - size.width as i32 - 32,
-                    area.position.y + 40,
-                ))
+                .with_webview(move |webview| {
+                    let controller = webview.controller();
+                    // 恢复合成表面而不重新加载页面，保留额度、气泡和前端状态。
+                    let result = unsafe {
+                        controller
+                            .NotifyParentWindowPositionChanged()
+                            .and_then(|_| controller.SetIsVisible(false))
+                            .and_then(|_| controller.SetIsVisible(true))
+                    };
+                    if let Err(error) = result {
+                        crate::overlay_recovery::report_error(&handle, &error.to_string());
+                    }
+                })
                 .map_err(|error| error.to_string())?;
         }
     }
     Ok(())
+}
+
+pub fn ensure_overlay_on_screen(app: &AppHandle) -> Result<(), String> {
+    if crate::overlay_recovery::is_paused(app) {
+        return Ok(());
+    }
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        if !crate::overlay_recovery::is_paused(&handle) {
+            if let Err(error) = restore_overlay_geometry(&handle, false) {
+                crate::overlay_recovery::report_error(&handle, &error);
+            }
+        }
+    })
+    .map_err(|error| error.to_string())
 }

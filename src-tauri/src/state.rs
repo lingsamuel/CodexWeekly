@@ -14,7 +14,6 @@ pub struct AppState {
     pub refresh: Notify,
     pub activity_refresh: Notify,
     pub shutdown: Notify,
-    pub position_save_pending: std::sync::atomic::AtomicBool,
 }
 
 pub struct AppData {

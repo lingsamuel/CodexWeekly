@@ -1,5 +1,20 @@
 # 版本验证记录
 
+## 0.1.4：息屏位置与完整渲染恢复
+
+日期：2026-10-29。检查 `.tmp` 中仅剩圆环顶部的截图，确认原实现将所有系统 `Moved` 事件写入用户位置，且只检查位置可见性，未恢复固定尺寸和 WebView 客户区。参考 Reminders 的显示器、电源变化后重新应用布局、程序调整不保存用户几何的方式，复用本项目的工作区与跨屏可见规则修复。
+
+- 仅完成用户拖动时保存位置；系统调整和临时副屏回退不写入。保存期间暂停恢复，保存版本防止旧异步任务覆盖新拖动。屏幕电源、系统恢复、显示器、工作区和 DPI 通知合并 750 毫秒，在 UI 线程重新应用几何；息屏期间暂停 10 秒兜底。
+- 移动后使用真实 HWND DPI 恢复 176×176 逻辑尺寸，以实际客户区同步 WebView 子窗口边界；可见时恢复合成表面，不重新加载页面。隐藏窗口不主动显示，锁定与穿透设置保持。
+- 49 项自动测试通过：Rust 核心 17、悬浮窗几何与保存状态 11、Python 桥接 9、前端 12。覆盖副屏断开再连接、负坐标、混合 DPI 跨屏、小工作区、显示器信息为空、拖动中断、异步保存与恢复的竞态。TypeScript、生产构建、Rust fmt、Windows Clippy `-D warnings` 通过，独立代码审查未发现遗留的重要问题。
+- 隔离 Windows 桌面上使用独立应用 identifier 和数据库运行真实发布构建，未切换用户桌面或注入鼠标键盘。模拟将 HWND 移位并压缩为 22 物理像素高，五项原生检查通过：系统唤醒、屏幕关闭/打开通知、显示器变化、完成拖动后保存与恢复、已隐藏窗口继续隐藏。屏幕关闭通知后等待超过 10 秒，确认兜底任务没有移动窗口。
+- 实际 WebView2 在 150% DPI 下恢复为 264×264 物理客户区、176×176 CSS 视口，圆环完全位于视口内；恢复后截图目视完整，额度与会话气泡正常，未出现恢复错误。既有浏览器回归与发布 CSP 检查通过，托盘自动生成 16384 字节 RGBA，CSP 违规为 0。
+- 新增 `scripts/verify-overlay-recovery.ps1`，只允许 identifier 为 `dev.lingsamuel.codexweeklyrecoverytest` 的独立构建，防止单实例插件影响用户正在运行的程序；测试须携带同目录 WebView2Loader 和运行库。可以用 `TAURI_CONFIG='{"identifier":"dev.lingsamuel.codexweeklyrecoverytest"}'` 构建该测试版本，再传入 `-Executable` 和 `-OutputDirectory`。普通可移植包使用原 identifier，测试构建不作为正式交付。
+
+上述 Windows 验证是隔离桌面的消息模拟与真实 WebView 渲染，**尚未代替物理息屏、显示器热插拔和真实跨屏 DPI 操作的实机验收**。本次没有重新测量完整资源占用。
+
+接口依据：[Windows 电源通知](https://learn.microsoft.com/en-us/windows/win32/power/registering-for-power-events)、[WebView2 控制器边界与可见性](https://learn.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2controller)。
+
 ## 0.1.0
 
 日期：2026-10-28。环境：Windows 11 x64（26200.8457）、WSL Arch、Codex CLI 0.164.0、系统 WebView2 131.0.2903.86。

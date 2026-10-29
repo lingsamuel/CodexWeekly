@@ -3,6 +3,8 @@
 mod activity;
 mod collector;
 mod commands;
+mod overlay_geometry;
+mod overlay_recovery;
 mod state;
 mod tray;
 mod windows;
@@ -103,7 +105,6 @@ pub fn run() {
                 refresh: tokio::sync::Notify::new(),
                 activity_refresh: tokio::sync::Notify::new(),
                 shutdown: tokio::sync::Notify::new(),
-                position_save_pending: std::sync::atomic::AtomicBool::new(false),
             });
             tray::create(app.handle())?;
             windows::create_overlay(app.handle())?;

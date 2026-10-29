@@ -9,6 +9,7 @@ npm ci
 npm test
 python3 -m unittest discover -s scripts -p 'test_*.py'
 cargo test -p limit-core --locked
+cargo test -p codex-weekly-overlay --test overlay_geometry --locked
 npm run build
 cargo build -p codex-weekly-overlay --release --features custom-protocol --target x86_64-pc-windows-gnu --locked
 python3 scripts/package_windows.py

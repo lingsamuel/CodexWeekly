@@ -9,6 +9,7 @@
 运行条件：Windows 10/11 x64、Microsoft Edge WebView2 Runtime，以及已经登录 Codex 的 WSL 发行版。该 WSL 需要 Python 3（仅标准库）和支持 `codex app-server` 的 Codex CLI。可移植包不自动安装系统组件；若缺少 WebView2，请先安装 [Microsoft 官方运行时](https://developer.microsoft.com/microsoft-edge/webview2/)。Windows 原生构建的 NSIS 安装包包含 WebView2 安装引导。
 
 - **拖动**：解锁时拖动圆环调整位置，位置自动保存。
+- **息屏恢复**：亮屏、唤醒或显示器/DPI 变化后自动恢复完整圆环与用户位置；系统临时移位不覆盖拖动位置。副屏断开时临时回到主屏，重连后恢复原位置。
 - **锁定**：右键托盘，勾选“锁定悬浮窗（鼠标穿透）”。整个悬浮窗口会穿透鼠标且不可聚焦；从托盘取消勾选即可恢复拖动。
 - **圆环方向与右键**：额度消耗从圆环 12 点沿右上方顺时针扩展；悬浮窗内屏蔽网页右键菜单，管理操作使用托盘。
 - **历史**：左键单击托盘打开面板，选择 24 小时、7 天或 30 天；鼠标悬停或用键盘查看采样值。
@@ -54,6 +55,7 @@ npm run check
 npm test
 npm run build
 cargo test -p limit-core --locked
+cargo test -p codex-weekly-overlay --test overlay_geometry --locked
 cargo clippy -p limit-core -- -D warnings
 python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
@@ -68,7 +70,7 @@ Windows MSVC 构建：运行 `powershell -ExecutionPolicy Bypass -File scripts/b
 
 ## 资源使用
 
-圆环采用事件驱动 SVG，没有持续动画或逐帧循环；静态界面使用软件合成以减少空闲 GPU 资源。主面板关闭后销毁，后台串行采集，额度查询用的临时 Codex app-server 采集结束即退出。会话统计另维持一条到现有 daemon 的轻量代理连接，并缓存未变化的完成状态；退出仅关闭自己的代理，不停止 daemon。每 10 秒检查一次显示器位置，避免外接屏移除后悬浮窗遗失。内存包含共享 WebView2 运行时进程，不能仅用 exe 内存代表整个软件；实际测量与验证范围记录在 `docs/verification.md`。
+圆环采用事件驱动 SVG，没有持续动画或逐帧循环；静态界面使用软件合成以减少空闲 GPU 资源。主面板关闭后销毁，后台串行采集，额度查询用的临时 Codex app-server 采集结束即退出。会话统计另维持一条到现有 daemon 的轻量代理连接，并缓存未变化的完成状态；退出仅关闭自己的代理，不停止 daemon。屏幕电源、显示器、工作区和 DPI 通知经 750 毫秒合并后恢复窗口与 WebView 边界，另保留每 10 秒的几何检查；息屏、拖动及位置保存期间暂停兜底恢复。只有用户完成拖动才保存位置。内存包含共享 WebView2 运行时进程，不能仅用 exe 内存代表整个软件；实际测量与验证范围记录在 `docs/verification.md`。
 
 ## 协议参考
 
