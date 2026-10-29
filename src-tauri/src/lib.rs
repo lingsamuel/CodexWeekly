@@ -15,6 +15,7 @@ use std::sync::Mutex;
 use tauri::{Manager, RunEvent};
 
 pub fn run() {
+    let started_at = state::now();
     if let Some(path) = std::env::args()
         .skip(1)
         .collect::<Vec<_>>()
@@ -24,7 +25,7 @@ pub fn run() {
     {
         let result = tauri::async_runtime::block_on(async {
             tokio::time::timeout(std::time::Duration::from_secs(35), async {
-                activity::ActivityClient::connect(&Settings::default())
+                activity::ActivityClient::connect(&Settings::default(), started_at)
                     .await?
                     .fetch_counts()
                     .await
@@ -34,10 +35,10 @@ pub fn run() {
         });
         let report = match &result {
             Ok(counts) => {
-                serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"ok":true,"sessions":counts})
+                serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"startedAt":started_at,"ok":true,"sessions":counts})
             }
             Err(error) => {
-                serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"ok":false,"error":error})
+                serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"startedAt":started_at,"ok":false,"error":error})
             }
         };
         if std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).is_err() {
@@ -83,7 +84,7 @@ pub fn run() {
             commands::list_distros,
             commands::set_tray_image
         ])
-        .setup(|app| {
+        .setup(move |app| {
             let directory = app.path().app_data_dir()?;
             std::fs::create_dir_all(&directory)?;
             let store = Store::open(&directory.join("weekly.sqlite3"))?;
@@ -112,7 +113,7 @@ pub fn run() {
                 windows::open_dashboard(app.handle())?;
             }
             collector::start(app.handle().clone());
-            activity::start(app.handle().clone());
+            activity::start(app.handle().clone(), started_at);
             Ok(())
         })
         .build(tauri::generate_context!())

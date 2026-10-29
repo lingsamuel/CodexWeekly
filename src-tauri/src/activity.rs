@@ -27,11 +27,12 @@ pub(crate) struct ActivityClient {
     socket: WebSocketStream<Join<ChildStdout, ChildStdin>>,
     _process: Child,
     request_id: u64,
+    started_at: i64,
     completed: HashMap<CompletionKey, bool>,
 }
 
 impl ActivityClient {
-    pub(crate) async fn connect(settings: &Settings) -> Result<Self, String> {
+    pub(crate) async fn connect(settings: &Settings, started_at: i64) -> Result<Self, String> {
         let mut process = bridge_command(settings, "--daemon-proxy")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -51,6 +52,7 @@ impl ActivityClient {
             socket,
             _process: process,
             request_id: 0,
+            started_at,
             completed: HashMap::new(),
         };
         client.rpc("initialize",json!({"clientInfo":{"name":"codex_weekly_overlay","title":"Codex Weekly Overlay","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
@@ -142,7 +144,7 @@ impl ActivityClient {
             }
             // 只取最后一轮的元数据，不加载聊天内容，也不修改官方已读回执。
             match self.rpc("thread/turns/list",json!({"threadId":key.thread_id,"limit":1,"sortDirection":"desc","itemsView":"notLoaded"})).await {
-                Ok(response) => if let Ok(completed) = latest_turn_completed(&response) {
+                Ok(response) => if let Ok(completed) = latest_turn_completed(&response, self.started_at) {
                     self.completed.insert(key,completed);
                 },
                 // 未读详情不可用不应抹去已经完整读取的工作中数量。
@@ -158,7 +160,7 @@ impl ActivityClient {
     }
 }
 
-pub fn start(app: AppHandle) {
+pub fn start(app: AppHandle, started_at: i64) {
     tauri::async_runtime::spawn(async move {
         let mut client: Option<ActivityClient> = None;
         let mut distro = String::new();
@@ -174,7 +176,8 @@ pub fn start(app: AppHandle) {
             let result = tokio::select! {
                 result = tokio::time::timeout(Duration::from_secs(35),async {
                     if client.is_none() {
-                        client = Some(ActivityClient::connect(&settings).await?);
+                        // 重连或切换发行版仍沿用程序入口的时刻，不截断本次运行已完成的任务。
+                        client = Some(ActivityClient::connect(&settings, started_at).await?);
                         distro = settings.distro.clone();
                     }
                     client.as_mut().unwrap().fetch_counts().await
@@ -188,10 +191,9 @@ pub fn start(app: AppHandle) {
                 if data.preferences.settings == settings {
                     match result {
                         Ok(counts) => {
-                            data.session_error = counts
-                                .unread_completed
-                                .is_none()
-                                .then(|| "Codex 未读状态暂不可用，红色气泡已隐藏。".into());
+                            data.session_error = counts.unread_completed.is_none().then(|| {
+                                "Codex 完成时间或未读状态暂不可用，红色气泡已隐藏。".into()
+                            });
                             data.sessions = Some(counts);
                         }
                         Err(error) => {

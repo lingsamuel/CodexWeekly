@@ -124,7 +124,7 @@ try {
   await page.setViewportSize({ width: 176, height: 176 });
   await page.goto('http://127.0.0.1:1420/?view=overlay&demo=1');
   await page.getByRole('img', { name: '4 个正在工作中的会话' }).waitFor();
-  await page.getByRole('img', { name: '2 个已完成但尚未阅读的会话' }).waitFor();
+  await page.getByRole('img', { name: '2 个本次启动后完成且回执未读的会话' }).waitFor();
   await page.screenshot({ path: path.join(output, 'overlay-badges.png'), omitBackground: true });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 176);
   assert.equal(await page.evaluate(() => document.documentElement.scrollHeight), 176);

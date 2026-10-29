@@ -122,7 +122,7 @@ pub fn parse_thread_page(response: &Value) -> Result<ThreadPage, String> {
     })
 }
 
-pub fn latest_turn_completed(response: &Value) -> Result<bool, String> {
+pub fn latest_turn_completed(response: &Value, started_at: i64) -> Result<bool, String> {
     let rows = response
         .get("data")
         .and_then(Value::as_array)
@@ -131,7 +131,15 @@ pub fn latest_turn_completed(response: &Value) -> Result<bool, String> {
         return Ok(false);
     };
     match turn.get("status").and_then(Value::as_str) {
-        Some("completed") => Ok(true),
+        Some("completed") => {
+            // 会话更新和开始时间不能代表结果交付；只用轮次真实完成时间排除历史积压。
+            let completed_at = turn
+                .get("completedAt")
+                .and_then(Value::as_i64)
+                .filter(|time| *time >= 0)
+                .ok_or("Codex 未返回有效的轮次完成时间。")?;
+            Ok(completed_at >= started_at)
+        }
         Some("inProgress" | "failed" | "interrupted") => Ok(false),
         _ => Err("Codex 返回了未知轮次状态。".into()),
     }
