@@ -4,6 +4,7 @@ use tauri::{
     AppHandle, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewUrl,
     WebviewWindowBuilder,
 };
+use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
 
 // 仅按采样更新 SVG，软件合成可减少空闲 GPU 资源。
 // 同一 WebView2 环境内的窗口须保持一致参数，避免创建选项冲突。
@@ -38,6 +39,7 @@ pub fn create_overlay(app: &AppHandle) -> Result<(), String> {
     .additional_browser_args(RENDERER_ARGS)
     .inner_size(OVERLAY_SIZE, OVERLAY_SIZE)
     .resizable(false)
+    .minimizable(false)
     .decorations(false)
     .transparent(true)
     .shadow(false)
@@ -88,9 +90,6 @@ pub fn set_locked(app: &AppHandle, locked: bool) -> Result<(), String> {
 }
 
 pub fn set_visible(app: &AppHandle, visible: bool) -> Result<(), String> {
-    if visible {
-        ensure_overlay_on_screen(app)?;
-    }
     let overlay = app
         .get_webview_window("overlay")
         .ok_or("悬浮窗尚未创建。")?;
@@ -115,6 +114,9 @@ pub fn set_visible(app: &AppHandle, visible: bool) -> Result<(), String> {
     }
     data.preferences = preferences;
     drop(data);
+    if visible {
+        ensure_overlay_on_screen(app)?;
+    }
     broadcast(app);
     Ok(())
 }
@@ -125,6 +127,21 @@ pub fn restore_overlay_geometry(app: &AppHandle, repaint: bool) -> Result<(), St
         return Ok(());
     };
     let preferences = app.state::<AppState>().lock()?.preferences.clone();
+    let minimized = overlay.is_minimized().map_err(|error| error.to_string())?;
+    if minimized {
+        if !preferences.overlay_visible {
+            return Ok(());
+        }
+        let hwnd = overlay.hwnd().map_err(|error| error.to_string())?.0;
+        // 最小化窗口可仍被 IsWindowVisible 判为可见；改坐标无法恢复，也不能用会抢焦点的 SW_RESTORE。
+        unsafe {
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
+        if overlay.is_minimized().map_err(|error| error.to_string())? {
+            return Err("无法恢复已最小化的悬浮窗。".into());
+        }
+    }
+    let repaint = repaint || minimized;
     let monitors = overlay
         .available_monitors()
         .map_err(|error| error.to_string())?;

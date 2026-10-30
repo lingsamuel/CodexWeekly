@@ -21,9 +21,9 @@ use windows_sys::Win32::{
         Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         WindowsAndMessaging::{
             GetWindowRect, DEVICE_NOTIFY_WINDOW_HANDLE, PBT_APMRESUMEAUTOMATIC,
-            PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PBT_POWERSETTINGCHANGE, WM_DISPLAYCHANGE,
-            WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_NCDESTROY, WM_POWERBROADCAST,
-            WM_SETTINGCHANGE,
+            PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PBT_POWERSETTINGCHANGE, SIZE_MINIMIZED,
+            WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_NCDESTROY,
+            WM_POWERBROADCAST, WM_SETTINGCHANGE, WM_SIZE,
         },
     },
 };
@@ -160,6 +160,13 @@ unsafe extern "system" fn window_proc(
     }
     let state = hook.app.state::<RecoveryState>();
     match message {
+        WM_SIZE if wparam == SIZE_MINIMIZED as usize => {
+            // 系统可能在拖动结束前最小化，不能让 iconic 坐标进入用户位置或一直阻塞恢复。
+            if let Ok(mut drag) = state.drag.lock() {
+                drag.interrupt();
+            }
+            request(&hook.app);
+        }
         WM_ENTERSIZEMOVE => {
             state.generation.fetch_add(1, Ordering::Relaxed);
             if let Ok(mut drag) = state.drag.lock() {
