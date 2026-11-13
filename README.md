@@ -69,6 +69,8 @@ Windows 桌面开发（安装 Visual Studio C++ 工具、Rust MSVC 和 WebView2�
 
 WSL 交叉编译：安装 MinGW-w64 GCC、binutils 与 Windows GNU Rust 目标，然后运行 `bash scripts/build-windows.sh`。输出位于 `artifacts/`，包含完整可移植目录、ZIP 和 SHA-256；GNU 版自动包含锁定版本的 WebView2Loader 与实际导入的 MinGW DLL。
 
+当前代码已经通过相应测试时，可使用 `bash scripts/build-windows.sh --skip-tests` 避免重复测试。可直接运行的目录固定为 `artifacts/CodexWeekly-windows-x64`，压缩包包含版本号；最多保留最新四份压缩包，不将 `docs` 开发文档打入发布包。
+
 Windows MSVC 构建：运行 `powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1`。构建工具需要联网获取首次安装的依赖与 NSIS 工具。仓库不要求用户重新登录 Codex，也不提供 WSL/Codex 的自动安装功能。
 
 ## 资源使用

@@ -15,14 +15,14 @@ def main():
     args = parser.parse_args()
     root = pathlib.Path(__file__).resolve().parents[1]
     version = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
-    name = f"CodexWeekly-{version}-windows-x64"
-    destination = root / "artifacts" / name
+    release_name = f"CodexWeekly-{version}-windows-x64"
+    destination = root / "artifacts" / "CodexWeekly-windows-x64"
+    if destination.exists():
+        shutil.rmtree(destination)
     destination.mkdir(parents=True, exist_ok=True)
     executable = root / "target" / args.target / "release" / "codex-weekly-overlay.exe"
     shutil.copy2(executable, destination / "CodexWeekly.exe")
     shutil.copy2(root / "README.md", destination / "README.md")
-    (destination / "docs").mkdir(exist_ok=True)
-    shutil.copy2(root / "docs" / "verification.md", destination / "docs" / "verification.md")
     if args.target.endswith("gnu"):
         import os
         cargo_home = pathlib.Path(os.environ.get("CARGO_HOME", str(pathlib.Path.home() / ".cargo")))
@@ -51,13 +51,26 @@ def main():
                 shutil.copy2(source, target)
                 copied.add(name.lower())
                 pending.append(target)
-    archive = destination.parent / f"{destination.name}.zip"
+    archive = destination.parent / f"{release_name}.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as package:
         for path in sorted(destination.rglob('*')):
             if path.is_file():
                 package.write(path, f"{destination.name}/{path.relative_to(destination).as_posix()}")
     checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
     archive.with_suffix(".zip.sha256").write_text(f"{checksum}  {archive.name}\n", encoding="utf-8")
+    # 只清理本脚本生成的发行产物，保留最新四份压缩包和一个可直接使用的目录。
+    releases = []
+    for path in destination.parent.iterdir():
+        match = re.fullmatch(r"CodexWeekly-(\d+(?:\.\d+)+)(?:-windows-x64)?(?:\.zip)?", path.name)
+        if not match:
+            continue
+        if path.is_dir():
+            shutil.rmtree(path)
+        elif path.suffix == ".zip":
+            releases.append((tuple(map(int, match[1].split("."))), path))
+    for _, path in sorted(releases, reverse=True)[4:]:
+        path.unlink()
+        path.with_suffix(".zip.sha256").unlink(missing_ok=True)
     print(f"已生成：{archive}")
 
 
