@@ -1,7 +1,7 @@
 import { useId } from 'react';
 import { percent } from '../lib/format';
 
-export function QuotaRing({ value, variant = 'dashboard', stale = false }: { value?: number; variant?: 'overlay' | 'dashboard'; stale?: boolean }) {
+export function QuotaRing({ value, variant = 'dashboard', stale = false, caption = '可用额度' }: { value?: number; variant?: 'overlay' | 'dashboard'; stale?: boolean; caption?: string }) {
   const id = useId().replaceAll(':', '');
   const safeValue = value !== undefined && Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : undefined;
   const circumference = 2 * Math.PI * 68;
@@ -17,6 +17,6 @@ export function QuotaRing({ value, variant = 'dashboard', stale = false }: { val
       {/* 固定余量弧的末端在 12 点，使已用部分从右上方顺时针扩展。 */}
       {safeValue !== undefined && <circle className="ring-value" cx="84" cy="84" r="68" stroke={`url(#${id}-ring)`} strokeDasharray={`${progressLength} ${circumference}`} strokeDashoffset={progressLength - circumference} transform="rotate(-90 84 84)" />}
     </svg>
-    <div className="ring-copy"><span className="ring-eyebrow">WEEKLY</span><div className="ring-number">{percent(safeValue)}{safeValue !== undefined && <span>%</span>}</div><span className="ring-caption">{variant === 'overlay' ? '本周剩余' : '可用额度'}</span></div>
+    <div className="ring-copy"><span className="ring-eyebrow">WEEKLY</span><div className="ring-number">{percent(safeValue)}{safeValue !== undefined && <span>%</span>}</div><span className="ring-caption">{caption}</span></div>
   </div>;
 }

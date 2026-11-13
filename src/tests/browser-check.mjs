@@ -61,6 +61,8 @@ async function verifyProductionCsp(browser) {
       };
     });
     const productionPage = await context.newPage();
+    await productionPage.clock.install({ time: new Date('2026-11-14T00:00:00Z') });
+    await productionPage.clock.pauseAt(new Date('2026-11-14T00:00:01Z'));
     const runtimeErrors = [];
     productionPage.on('pageerror', error => runtimeErrors.push(error.message));
     const address = server.address();
@@ -76,6 +78,12 @@ async function verifyProductionCsp(browser) {
     assert.equal(probe.blobsCreated, probe.blobsRevoked);
     assert.ok(probe.renders.some(render => render.typed && render.transparentCorner && render.opaque > 1000));
     await productionPage.screenshot({ path: path.join(output, 'production-csp-overlay.png'), omitBackground: true });
+    assert.equal(await productionPage.locator('.ring-caption').textContent(), '3天0小时后重置');
+    await productionPage.clock.fastForward(3600_000);
+    await productionPage.getByText('2天23小时后重置', { exact: true }).waitFor();
+    assert.equal(await productionPage.evaluate(() => window.__trayCspProbe.renders.length), probe.renders.length);
+    await productionPage.clock.fastForward(71 * 3600_000);
+    await productionPage.getByText('等待新的额度窗口', { exact: true }).waitFor();
     return { cspViolations: probe.violations.length, automaticRgbaBytes: probe.renders.at(-1).bytes, blobsRevoked: probe.blobsRevoked };
   } finally {
     await context.close();

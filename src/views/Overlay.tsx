@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { beginDrag, openDashboard, setTrayImage } from '../lib/api';
-import { dateTime, errorMessage } from '../lib/format';
+import { dateTime, errorMessage, resetLabel } from '../lib/format';
 import { useSnapshot } from '../lib/useSnapshot';
 import { QuotaRing } from '../components/QuotaRing';
 import { SessionBadge } from '../components/SessionBadge';
@@ -12,6 +12,12 @@ export function Overlay() {
   const roundedQuota = trayPercent(snapshot.quota?.remainingPercent);
   const stale = snapshot.status !== 'online';
   const [actionError, setActionError] = useState<string | null>(null);
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    // 离线时也按真实时间更新，避免倒计时依赖额度采集成功。
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
   useEffect(() => {
     const svg = ringHost.current?.querySelector<SVGSVGElement>('.quota-ring > svg');
     if (!svg) return;
@@ -29,7 +35,7 @@ export function Overlay() {
       if (snapshot.locked || event.button !== 0 || event.detail > 1) return;
       void beginDrag().catch(error => setActionError(errorMessage(error)));
     }} onDoubleClick={() => { if (!snapshot.locked) void openDashboard().catch(error => setActionError(errorMessage(error))); }}>
-      <QuotaRing value={snapshot.quota?.remainingPercent} variant="overlay" stale={snapshot.status !== 'online'} />
+      <QuotaRing value={snapshot.quota?.remainingPercent} variant="overlay" stale={snapshot.status !== 'online'} caption={resetLabel(snapshot.quota?.resetsAt, 'countdown', now)} />
       <SessionBadge count={snapshot.sessions?.working} kind="working" />
       <SessionBadge count={snapshot.sessions?.unreadCompleted} kind="completed" />
       <div className={`overlay-status status-${snapshot.status}`}><span className="status-dot" />{status}</div>
