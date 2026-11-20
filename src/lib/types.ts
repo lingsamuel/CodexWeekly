@@ -17,6 +17,7 @@ export interface SessionDetail {
   completionId: string | null;
   title: string | null;
   project: string | null;
+  projectGroupKey: string | null;
   workingDirectory: string | null;
 }
 export interface SessionCounts {

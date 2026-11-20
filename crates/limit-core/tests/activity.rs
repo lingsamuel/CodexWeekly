@@ -69,14 +69,50 @@ fn working_details_include_only_the_display_metadata_in_stable_order() {
     .unwrap();
     let counts = summarize_threads(&page.threads, false, &HashMap::new(), 100);
 
+    let rows: Vec<_> = counts
+        .working_details
+        .iter()
+        .map(|row| {
+            (
+                row.id.as_str(),
+                row.title.as_deref(),
+                row.working_directory.as_deref(),
+            )
+        })
+        .collect();
     assert_eq!(
-        serde_json::to_value(counts).unwrap(),
-        json!({"working":3,"unreadCompleted":null,"observedAt":100,"workingDetails":[
-            {"id":"a","title":null,"project":null,"workingDirectory":null,"completionId":null},
-            {"id":"z","title":"检查安装包","project":null,"workingDirectory":"Overlay\\Work","completionId":null},
-            {"id":"older","title":null,"project":null,"workingDirectory":"Other","completionId":null}
-        ],"unreadCompletedDetails":null})
+        rows,
+        [
+            ("a", None, None),
+            ("z", Some("检查安装包"), Some("Overlay\\Work")),
+            ("older", None, Some("Other")),
+        ]
     );
+}
+
+#[test]
+fn detail_grouping_keeps_project_and_directory_identity() {
+    let page = parse_thread_page(&json!({"data":[
+        {"id":"a","status":{"type":"active"},"projectId":"private-id","cwd":"/a/repo"},
+        {"id":"b","status":{"type":"active"},"projectId":"private-id","cwd":"/b/repo"},
+        {"id":"c","status":{"type":"active"},"cwd":"/a/repo/"},
+        {"id":"d","status":{"type":"active"},"cwd":"/a/repo"},
+        {"id":"e","status":{"type":"active"},"cwd":"/b/repo"},
+        {"id":"f","status":{"type":"active"}}
+    ]}))
+    .unwrap();
+    let details =
+        serde_json::to_value(summarize_threads(&page.threads, false, &HashMap::new(), 1)).unwrap();
+    let items = details["workingDetails"].as_array().unwrap();
+    let key = |index: usize| &items[index]["projectGroupKey"];
+    assert_eq!(key(0), key(1));
+    assert_eq!(key(2), key(3));
+    assert_ne!(key(2), key(4));
+    assert_ne!(key(0), key(2));
+    assert!(key(5).is_null());
+    assert!(items
+        .iter()
+        .all(|item| item.get("projectId").is_none() && item.get("cwd").is_none()));
 }
 
 #[test]

@@ -1,5 +1,6 @@
 use serde::Serialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::cmp::Reverse;
 use std::collections::HashMap;
 
@@ -20,6 +21,8 @@ pub struct SessionDetail {
     pub completion_id: Option<String>,
     pub title: Option<String>,
     pub project: Option<String>,
+    /// 以实际归属分组，界面无需读取完整目录或 Project 标识。
+    pub project_group_key: Option<String>,
     pub working_directory: Option<String>,
     /// 仅用于通过 daemon 关联 Project 名称。
     #[serde(skip)]
@@ -49,7 +52,7 @@ pub struct SessionThread {
     read_state: ReadState,
     title: Option<String>,
     project_id: Option<String>,
-    working_directory: Option<String>,
+    cwd: Option<String>,
 }
 
 impl SessionThread {
@@ -72,15 +75,32 @@ impl SessionThread {
     }
 
     fn detail(&self, completion_id: Option<String>) -> SessionDetail {
+        let directory = self.cwd.as_deref().and_then(display_directory);
+        let project_group_key = self
+            .project_id
+            .as_deref()
+            .map(|id| ("project", id))
+            .or_else(|| directory.map(|(path, _)| ("directory", path)))
+            .map(|(kind, value)| format!("{kind}:{:x}", Sha256::digest(value.as_bytes())));
         SessionDetail {
             id: self.id.clone(),
             completion_id,
             title: self.title.clone(),
             project: None,
-            working_directory: self.working_directory.clone(),
+            project_group_key,
+            working_directory: directory.map(|(_, name)| name.to_owned()),
             project_id: self.project_id.clone(),
         }
     }
+}
+
+fn display_directory(cwd: &str) -> Option<(&str, &str)> {
+    // WSL 的绝对路径允许文件名包含反斜杠，只有 Windows 路径才将其视为分隔符。
+    let windows_path = !cwd.starts_with('/');
+    let separator = |character| character == '/' || (windows_path && character == '\\');
+    let path = cwd.trim_end_matches(separator);
+    let name = path.rsplit(separator).next()?;
+    (!name.is_empty()).then_some((path, name))
 }
 
 pub struct ThreadPage {
@@ -144,16 +164,7 @@ pub fn parse_thread_page(response: &Value) -> Result<ThreadPage, String> {
             read_state,
             title: nonempty_string(row, "name").map(str::to_owned),
             project_id: nonempty_string(row, "projectId").map(str::to_owned),
-            working_directory: row
-                .get("cwd")
-                .and_then(Value::as_str)
-                .and_then(|cwd| {
-                    // WSL 的绝对路径允许文件名包含反斜杠，只有 Windows 路径才将其视为分隔符。
-                    let windows_path = !cwd.starts_with('/');
-                    cwd.rsplit(|character| character == '/' || (windows_path && character == '\\'))
-                        .find(|part| !part.is_empty())
-                })
-                .map(str::to_owned),
+            cwd: row.get("cwd").and_then(Value::as_str).map(str::to_owned),
         });
     }
     let next_cursor = match response.get("nextCursor") {

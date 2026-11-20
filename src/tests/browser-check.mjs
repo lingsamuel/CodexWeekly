@@ -18,11 +18,14 @@ async function verifySessionDetails(browser) {
   await page.exposeBinding('__resizeOverlay', async ({ page }, expanded) => {
     await page.setViewportSize({ width: expanded ? 464 : 176, height: 176 });
   });
-  const detail = (id, title, project = null, workingDirectory = null, completionId = null) =>
-    ({ id, title, project, workingDirectory, completionId });
+  const detail = (id, title, project = null, workingDirectory = null, completionId = null, groupKey = null) =>
+    ({ id, title, project, workingDirectory, completionId,
+      projectGroupKey: groupKey ?? (project ? `project:${project}` : workingDirectory ? `directory:${workingDirectory}` : null) });
   const longTitle = '确认所有会话状态变更后更新部署交接记录'.repeat(8);
   const working = [detail('w0', '同步部署状态', 'Codex'), detail('w1', null, null, 'work\\overlay'),
     detail('long', longTitle, 'Codex'),
+    detail('same-1', '检查前端配置', '同名项目', null, null, 'project:frontend'),
+    detail('same-2', '检查后端配置', '同名项目', null, null, 'project:backend'),
     ...Array.from({ length: 5 }, (_, index) => detail(`extra-${index}`, `编写文档 ${index}`, '文档'))];
   const completed = [detail('c0', '检查旧日志', '运维', null, 'turn-0')];
   const errors = [];
@@ -97,7 +100,10 @@ async function verifySessionDetails(browser) {
   await badge('working').hover({ force: true });
   await panel.getByText('同步部署状态').waitFor({ timeout: 2000 });
   assert.equal(page.viewportSize().width, 464);
-  assert.equal(await panel.getByText('Codex', { exact: true }).count(), 2);
+  const codexProject = panel.getByRole('region', { name: 'Codex', exact: true });
+  assert.equal(await panel.getByRole('heading', { name: 'Codex', exact: true }).count(), 1);
+  assert.equal(await codexProject.getByRole('listitem').count(), 2);
+  assert.equal(await panel.getByRole('heading', { name: '同名项目', exact: true }).count(), 2);
   assert.equal(await panel.getByText('未命名会话', { exact: true }).count(), 1);
   assert.equal(await panel.getByText('工作目录 · work\\overlay', { exact: true }).count(), 1);
   assert.ok((await panel.getByText(longTitle, { exact: true }).boundingBox()).height > 15);
@@ -144,11 +150,12 @@ async function verifySessionDetails(browser) {
   await page.clock.fastForward(500);
   await page.clock.fastForward(500);
   await panel.waitFor({ state: 'hidden' });
+  assert.equal(await badge('completed').textContent(), '1', '悬停和收起只改变详情显示');
 
   const replacement = [detail('w2', '验证新会话', 'Codex'), ...working.slice(1)];
-  await publish({ working: replacement, completed: [detail('c0', '检查完成回执', '运维', null, 'turn-1')] });
+  await publish({ working: replacement, completed: [detail('c0', '检查完成回执', 'Codex', null, 'turn-1')] });
   await panel.getByText('验证新会话').waitFor();
-  assert.equal(await panel.getByText('检查完成回执').count(), 1, '相同会话中的新完成轮次与工作中替补一起展示');
+  assert.equal(await codexProject.getByText('检查完成回执').count(), 1, '同一项目中的两种状态共用一组');
   assert.ok((await regions())?.some(region => region.target === 'details'));
   await emit('overlay-region-scroll', { deltaY: 150 });
   assert.ok(await panel.evaluate(element => [...element.querySelectorAll('*')].some(child => child.scrollTop > 0)));

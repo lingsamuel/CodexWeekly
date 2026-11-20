@@ -7,11 +7,11 @@ export const demoMode = params.get('demo') === '1';
 export const desktopMode = isTauri();
 export const initialSnapshot: AppSnapshot = {
   sessions: null, sessionError: null, quota: null, status: 'connecting', error: null, locked: false, overlayVisible: true,
-  settings: { distro: '', pollIntervalSecs: 60 }, version: '0.1.8',
+  settings: { distro: '', pollIntervalSecs: 60 }, version: '0.1.9',
 };
 const now = Math.floor(Date.now() / 1000);
 const demoSession = (id: string, title: string, project: string, completionId: string | null = null): SessionDetail =>
-  ({ id, title, project, completionId, workingDirectory: null });
+  ({ id, title, project, projectGroupKey: project, completionId, workingDirectory: null });
 const workingDetails = [
   demoSession('demo-1', '核对额度采样记录', 'Codex Weekly Overlay'),
   demoSession('demo-2', '梳理异常处理流程', '应用文档'),

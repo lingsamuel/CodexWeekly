@@ -474,7 +474,7 @@ dependencies = [
 
 [[package]]
 name = "codex-weekly-overlay"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "futures-util",
  "limit-core",
@@ -2011,7 +2011,7 @@ dependencies = [
 
 [[package]]
 name = "limit-core"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "rusqlite",
  "serde",
