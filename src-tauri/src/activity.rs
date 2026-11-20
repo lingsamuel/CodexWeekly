@@ -22,7 +22,9 @@ use tokio::{
     process::{Child, ChildStdin, ChildStdout},
 };
 use tokio_tungstenite::{client_async, tungstenite::Message, WebSocketStream};
-use windows_sys::Win32::{System::Diagnostics::Debug::MessageBeep, UI::WindowsAndMessaging::MB_OK};
+use windows_sys::Win32::Media::Audio::{PlaySoundA, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
+
+static COMPLETION_CHIME: &[u8] = include_bytes!("../sounds/completion-chime.wav");
 
 pub(crate) struct ActivityClient {
     socket: WebSocketStream<Join<ChildStdout, ChildStdin>>,
@@ -261,8 +263,14 @@ pub fn start(app: AppHandle, started_at: i64) {
                             if counts.record_unread_completions(&mut seen_completions)
                                 && data.preferences.completion_sound
                             {
-                                // 系统异步播放提示音，调用只传入 Win32 定义的声音类型。
-                                unsafe { MessageBeep(MB_OK) };
+                                // 异步播放结束前 Windows 仍可能读取音频，内置数据在进程退出前一直有效。
+                                unsafe {
+                                    PlaySoundA(
+                                        COMPLETION_CHIME.as_ptr(),
+                                        std::ptr::null_mut(),
+                                        SND_ASYNC | SND_MEMORY | SND_NODEFAULT,
+                                    );
+                                }
                             }
                             data.session_error = counts.unread_completed.is_none().then(|| {
                                 "Codex 完成时间或未读状态暂不可用，红色气泡已隐藏。".into()
