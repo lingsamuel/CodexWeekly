@@ -1,5 +1,5 @@
 use crate::{
-    state::{AppSnapshot, AppState},
+    state::{broadcast, AppSnapshot, AppState},
     windows,
 };
 use tauri::{
@@ -11,6 +11,7 @@ use tauri::{
 pub struct TrayControls {
     locked: CheckMenuItem<tauri::Wry>,
     visible: CheckMenuItem<tauri::Wry>,
+    completion_sound: CheckMenuItem<tauri::Wry>,
 }
 
 pub fn create(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
@@ -32,12 +33,28 @@ pub fn create(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         snapshot.overlay_visible,
         None::<&str>,
     )?;
+    let completion_sound = CheckMenuItem::with_id(
+        app,
+        "completion_sound",
+        "任务完成提示音",
+        true,
+        snapshot.completion_sound,
+        None::<&str>,
+    )?;
     let refresh = MenuItem::with_id(app, "refresh", "立即刷新", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出 Codex Weekly", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(
         app,
-        &[&open, &separator, &locked, &visible, &refresh, &quit],
+        &[
+            &open,
+            &separator,
+            &locked,
+            &visible,
+            &completion_sound,
+            &refresh,
+            &quit,
+        ],
     )?;
     TrayIconBuilder::with_id("main")
         .icon(tauri::image::Image::from_bytes(include_bytes!(
@@ -72,6 +89,7 @@ pub fn create(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     .state::<AppState>()
                     .snapshot()
                     .and_then(|snapshot| windows::set_visible(app, !snapshot.overlay_visible)),
+                "completion_sound" => toggle_completion_sound(app),
                 "refresh" => {
                     app.state::<AppState>().refresh.notify_one();
                     Ok(())
@@ -85,7 +103,25 @@ pub fn create(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             report(app, result);
         })
         .build(app)?;
-    app.manage(TrayControls { locked, visible });
+    app.manage(TrayControls {
+        locked,
+        visible,
+        completion_sound,
+    });
+    Ok(())
+}
+
+fn toggle_completion_sound(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let mut data = state.lock()?;
+    let mut preferences = data.preferences.clone();
+    preferences.completion_sound = !preferences.completion_sound;
+    data.store
+        .save_preferences(&preferences)
+        .map_err(|error| format!("无法保存任务完成提示音设置：{error}"))?;
+    data.preferences = preferences;
+    drop(data);
+    broadcast(app);
     Ok(())
 }
 
@@ -94,7 +130,7 @@ fn report(app: &AppHandle, result: Result<(), String>) {
         if let Ok(mut data) = app.state::<AppState>().lock() {
             data.error = Some(error);
         }
-        crate::state::broadcast(app);
+        broadcast(app);
     }
 }
 
@@ -102,6 +138,9 @@ pub fn sync(app: &AppHandle, snapshot: &AppSnapshot) {
     if let Some(controls) = app.try_state::<TrayControls>() {
         let _ = controls.locked.set_checked(snapshot.locked);
         let _ = controls.visible.set_checked(snapshot.overlay_visible);
+        let _ = controls
+            .completion_sound
+            .set_checked(snapshot.completion_sound);
     }
     if let Some(tray) = app.tray_by_id("main") {
         let tooltip = match &snapshot.quota {

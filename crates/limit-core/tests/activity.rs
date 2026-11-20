@@ -1,6 +1,53 @@
-use limit_core::activity::{latest_completed_turn_id, parse_thread_page, summarize_threads};
+use limit_core::activity::{
+    latest_completed_turn_id, parse_thread_page, summarize_threads, SessionCounts,
+};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+fn completed_snapshot(turns: &[(&str, &str)]) -> SessionCounts {
+    let mut rows = Vec::new();
+    let mut receipts = serde_json::Map::new();
+    for &(thread, turn) in turns {
+        rows.push(json!({"id":thread,"status":{"type":"idle"}}));
+        receipts.insert(
+            thread.into(),
+            json!({"firstUnread":{"type":"turn","turnId":turn},"revision":"r"}),
+        );
+    }
+    let page = parse_thread_page(&json!({"data":rows,"readStates":receipts})).unwrap();
+    let completions = page
+        .threads
+        .iter()
+        .zip(turns)
+        .map(|(thread, &(_, turn))| (thread.completion_key().unwrap(), Some(turn.into())))
+        .collect();
+    summarize_threads(&page.threads, page.read_states_available, &completions, 100)
+}
+
+#[test]
+fn new_unread_turns_trigger_once_per_batch_even_when_total_is_unchanged() {
+    let mut seen = HashSet::new();
+    let first = completed_snapshot(&[("a", "turn-1"), ("b", "turn-1")]);
+    assert!(first.record_unread_completions(&mut seen));
+    assert!(!first.record_unread_completions(&mut seen));
+
+    let next = completed_snapshot(&[("a", "turn-2"), ("b", "turn-1")]);
+    assert_eq!(next.unread_completed, first.unread_completed);
+    assert!(next.record_unread_completions(&mut seen));
+    assert!(!next.record_unread_completions(&mut seen));
+}
+
+#[test]
+fn observed_turn_does_not_trigger_again_after_missing_or_read_snapshots() {
+    let mut seen = HashSet::new();
+    let finished = completed_snapshot(&[("a", "turn-1")]);
+    assert!(finished.record_unread_completions(&mut seen));
+    let unavailable = summarize_threads(&[], false, &HashMap::new(), 101);
+    assert!(!unavailable.record_unread_completions(&mut seen));
+    assert!(!completed_snapshot(&[]).record_unread_completions(&mut seen));
+    assert!(!finished.record_unread_completions(&mut seen));
+    assert!(completed_snapshot(&[("b", "turn-1")]).record_unread_completions(&mut seen));
+}
 
 #[test]
 fn counts_top_level_active_threads_and_completed_unread_only() {

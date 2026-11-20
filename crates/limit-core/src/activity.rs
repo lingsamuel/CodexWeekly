@@ -2,7 +2,7 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -12,6 +12,20 @@ pub struct SessionCounts {
     pub observed_at: i64,
     pub working_details: Vec<SessionDetail>,
     pub unread_completed_details: Option<Vec<SessionDetail>>,
+}
+
+impl SessionCounts {
+    /// 记录红色气泡里的完成轮次，并报告本批是否发现新结果。
+    /// 调用方在本次程序运行期间保留同一集合，静音时也记录已检测到的轮次。
+    pub fn record_unread_completions(&self, seen: &mut HashSet<(String, String)>) -> bool {
+        let mut has_new = false;
+        for session in self.unread_completed_details.iter().flatten() {
+            if let Some(turn_id) = &session.completion_id {
+                has_new |= seen.insert((session.id.clone(), turn_id.clone()));
+            }
+        }
+        has_new
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

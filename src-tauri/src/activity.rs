@@ -22,6 +22,7 @@ use tokio::{
     process::{Child, ChildStdin, ChildStdout},
 };
 use tokio_tungstenite::{client_async, tungstenite::Message, WebSocketStream};
+use windows_sys::Win32::{System::Diagnostics::Debug::MessageBeep, UI::WindowsAndMessaging::MB_OK};
 
 pub(crate) struct ActivityClient {
     socket: WebSocketStream<Join<ChildStdout, ChildStdin>>,
@@ -220,6 +221,7 @@ pub fn start(app: AppHandle, started_at: i64) {
     tauri::async_runtime::spawn(async move {
         let mut client: Option<ActivityClient> = None;
         let mut distro = String::new();
+        let mut seen_completions = HashSet::new();
         loop {
             let state = app.state::<AppState>();
             let settings = match state.lock() {
@@ -256,6 +258,12 @@ pub fn start(app: AppHandle, started_at: i64) {
                 if data.preferences.settings == settings {
                     match result {
                         Ok(counts) => {
+                            if counts.record_unread_completions(&mut seen_completions)
+                                && data.preferences.completion_sound
+                            {
+                                // 系统异步播放提示音，调用只传入 Win32 定义的声音类型。
+                                unsafe { MessageBeep(MB_OK) };
+                            }
                             data.session_error = counts.unread_completed.is_none().then(|| {
                                 "Codex 完成时间或未读状态暂不可用，红色气泡已隐藏。".into()
                             });

@@ -82,6 +82,8 @@ fn preferences_roundtrip_and_validate_input() {
     let mut prefs = Preferences::default();
     prefs.settings.distro = "Arch".into();
     prefs.locked = true;
+    assert!(prefs.completion_sound);
+    prefs.completion_sound = false;
     store.save_preferences(&prefs).unwrap();
     assert_eq!(store.preferences().unwrap(), prefs);
     for seconds in [0, 29, 3601] {
@@ -104,6 +106,15 @@ fn preferences_roundtrip_and_validate_input() {
     }
     .validate()
     .is_err());
+}
+
+#[test]
+fn legacy_preferences_enable_completion_sound_by_default() {
+    let prefs: Preferences =
+        serde_json::from_str(r#"{"overlayVisible":false,"locked":true}"#).unwrap();
+    assert!(prefs.completion_sound);
+    assert!(!prefs.overlay_visible);
+    assert!(prefs.locked);
 }
 
 #[test]

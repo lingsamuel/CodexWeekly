@@ -35,6 +35,8 @@ pub struct AppSnapshot {
     pub error: Option<String>,
     pub locked: bool,
     pub overlay_visible: bool,
+    #[serde(skip)]
+    pub completion_sound: bool,
     pub settings: Settings,
     pub version: &'static str,
     pub sessions: Option<SessionCounts>,
@@ -56,6 +58,7 @@ impl AppState {
             error: data.error.clone(),
             locked: data.preferences.locked,
             overlay_visible: data.preferences.overlay_visible,
+            completion_sound: data.preferences.completion_sound,
             settings: data.preferences.settings.clone(),
             version: env!("CARGO_PKG_VERSION"),
             sessions: data.sessions.clone(),

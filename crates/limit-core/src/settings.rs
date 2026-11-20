@@ -44,6 +44,7 @@ pub struct Preferences {
     pub locked: bool,
     pub overlay_visible: bool,
     pub overlay_position: Option<OverlayPosition>,
+    pub completion_sound: bool,
 }
 
 impl Default for Preferences {
@@ -53,6 +54,7 @@ impl Default for Preferences {
             locked: false,
             overlay_visible: true,
             overlay_position: None,
+            completion_sound: true,
         }
     }
 }
