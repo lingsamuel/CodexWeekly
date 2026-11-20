@@ -10,8 +10,211 @@ import { fileURLToPath } from 'node:url';
 // 仅运行 Linux headless；不连接 Windows CDP，也不产生系统输入。
 const cached = path.join(os.homedir(), '.cache/ms-playwright/chromium-1148/chrome-linux/chrome');
 const executablePath = process.env.CHROMIUM_EXECUTABLE ?? (existsSync(cached) ? cached : undefined);
-const output = process.env.BROWSER_CHECK_OUTPUT ?? '/tmp/codex-overlay-ui-013';
+const output = process.env.BROWSER_CHECK_OUTPUT ?? fileURLToPath(new URL('../../artifacts/browser-check/', import.meta.url));
 await fs.mkdir(output, { recursive: true });
+
+async function verifySessionDetails(browser) {
+  const page = await browser.newPage({ viewport: { width: 176, height: 176 } });
+  await page.exposeBinding('__resizeOverlay', async ({ page }, expanded) => {
+    await page.setViewportSize({ width: expanded ? 464 : 176, height: 176 });
+  });
+  const detail = (id, title, project = null, workingDirectory = null, completionId = null) =>
+    ({ id, title, project, workingDirectory, completionId });
+  const longTitle = '确认所有会话状态变更后更新部署交接记录'.repeat(8);
+  const working = [detail('w0', '同步部署状态', 'Codex'), detail('w1', null, null, 'work\\overlay'),
+    detail('long', longTitle, 'Codex'),
+    ...Array.from({ length: 5 }, (_, index) => detail(`extra-${index}`, `编写文档 ${index}`, '文档'))];
+  const completed = [detail('c0', '检查旧日志', '运维', null, 'turn-0')];
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.addInitScript(({ working, completed }) => {
+    const listeners = new Map();
+    const callbacks = new Map();
+    let callbackId = 0;
+    let snapshot = {
+      sessions: { working: working.length, unreadCompleted: completed.length, workingDetails: working, unreadCompletedDetails: completed, observedAt: 1 },
+      sessionError: null, quota: null, status: 'online', error: null, locked: false, overlayVisible: true,
+      settings: { distro: '', pollIntervalSecs: 60 }, version: 'test',
+    };
+    const calls = [];
+    const emit = (event, payload) => {
+      for (const id of listeners.get(event) ?? []) callbacks.get(id)?.({ event, id, payload });
+    };
+    window.isTauri = true;
+    window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
+    window.__TAURI_INTERNALS__ = {
+      transformCallback(callback) { callbacks.set(++callbackId, callback); return callbackId; },
+      async invoke(command, args) {
+        if (command === 'plugin:event|listen') {
+          if (!listeners.has(args.event)) listeners.set(args.event, new Set());
+          listeners.get(args.event).add(args.handler);
+          return args.handler;
+        }
+        if (command === 'plugin:event|unlisten') {
+          listeners.get(args.event)?.delete(args.eventId);
+          callbacks.delete(args.eventId);
+          return;
+        }
+        calls.push({ command, args });
+        if (command === 'get_snapshot') return snapshot;
+        if (command === 'set_overlay_details') {
+          await window.__resizeOverlay(args.expanded);
+          return 'right';
+        }
+      },
+    };
+    window.__sessionFixture = {
+      calls, emit,
+      publish({ working, completed, sessions, ...state }) {
+        const current = snapshot.sessions;
+        snapshot = {
+          ...snapshot, ...state,
+          sessions: sessions === null ? null : {
+            working: working?.length ?? current?.working ?? 0,
+            unreadCompleted: completed === undefined ? current?.unreadCompleted ?? null : completed?.length ?? null,
+            workingDetails: working ?? current?.workingDetails ?? [],
+            unreadCompletedDetails: completed === undefined ? current?.unreadCompletedDetails ?? null : completed,
+            observedAt: (current?.observedAt ?? 0) + 1,
+          },
+        };
+        emit('state-changed', snapshot);
+      },
+    };
+  }, { working, completed });
+  const publish = state => page.evaluate(state => window.__sessionFixture.publish(state), state);
+  const emit = (name, payload) => page.evaluate(([name, payload]) => window.__sessionFixture.emit(name, payload), [name, payload]);
+  const panel = page.getByRole('region', { name: '会话详情' });
+  const badge = kind => page.getByRole('img', { name: kind === 'working' ? /正在工作中/ : /回执未读/ });
+  const regions = () => page.evaluate(() => window.__sessionFixture.calls.findLast(call => call.command === 'set_overlay_hit_regions')?.args.regions);
+  const clockStart = new Date('2026-11-14T00:00:00Z');
+  await page.clock.install({ time: clockStart });
+  await page.clock.pauseAt(new Date(clockStart.getTime() + 1000));
+  await page.goto('http://127.0.0.1:1420/?view=overlay');
+  await badge('working').waitFor();
+  assert.equal(await panel.count(), 0, '首个快照只建立基准');
+  assert.deepEqual((await regions())?.map(region => region.target), ['working', 'completed']);
+
+  await badge('working').hover({ force: true });
+  await panel.getByText('同步部署状态').waitFor({ timeout: 2000 });
+  assert.equal(page.viewportSize().width, 464);
+  assert.equal(await panel.getByText('Codex', { exact: true }).count(), 2);
+  assert.equal(await panel.getByText('未命名会话', { exact: true }).count(), 1);
+  assert.equal(await panel.getByText('工作目录 · work\\overlay', { exact: true }).count(), 1);
+  assert.ok((await panel.getByText(longTitle, { exact: true }).boundingBox()).height > 15);
+  await panel.hover({ force: true });
+  await page.clock.fastForward(500);
+  assert.equal(await panel.count(), 1, '从气泡移入详情后保持展开');
+  await emit('overlay-details-side', 'left');
+  await page.waitForFunction(() => document.querySelector('.overlay-widget').getBoundingClientRect().x === 292);
+  assert.ok((await panel.boundingBox()).x < (await badge('working').boundingBox()).x);
+  await panel.hover({ force: true });
+  await page.mouse.move(0, 0);
+  await page.clock.fastForward(500);
+  assert.equal(await panel.count(), 1, '左侧列表留出跨越圆环的时间');
+  await panel.hover({ force: true });
+  await emit('overlay-details-side', 'right');
+  await page.waitForFunction(() => document.querySelector('.overlay-widget').getBoundingClientRect().x === 4);
+  await panel.hover({ force: true });
+  await page.mouse.move(0, 0);
+  await page.clock.fastForward(260);
+  await panel.waitFor({ state: 'hidden' });
+  assert.equal(page.viewportSize().width, 464, '退场动画结束后才还原原生窗口尺寸');
+  await page.clock.fastForward(500);
+  await page.waitForFunction(() => window.innerWidth === 176);
+  assert.deepEqual((await regions())?.map(region => region.target), ['working', 'completed']);
+
+  for (const kind of ['working', 'completed']) {
+    const box = await badge(kind).boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.up();
+  }
+  const mouseActions = await page.evaluate(() => window.__sessionFixture.calls.filter(
+    call => ['begin_drag', 'open_dashboard'].includes(call.command)).map(call => call.command));
+  assert.deepEqual(mouseActions, ['begin_drag', 'begin_drag']);
+  await page.mouse.move(0, 0);
+  await page.clock.fastForward(500);
+  await page.clock.fastForward(500);
+
+  await emit('overlay-region-hover', 'completed');
+  await publish({ locked: true });
+  await panel.getByText('检查旧日志').waitFor();
+  assert.equal(await panel.getByText('同步部署状态').count(), 0);
+  await emit('overlay-region-hover', null);
+  await page.clock.fastForward(500);
+  await page.clock.fastForward(500);
+  await panel.waitFor({ state: 'hidden' });
+
+  const replacement = [detail('w2', '验证新会话', 'Codex'), ...working.slice(1)];
+  await publish({ working: replacement, completed: [detail('c0', '检查完成回执', '运维', null, 'turn-1')] });
+  await panel.getByText('验证新会话').waitFor();
+  assert.equal(await panel.getByText('检查完成回执').count(), 1, '相同会话中的新完成轮次与工作中替补一起展示');
+  assert.ok((await regions())?.some(region => region.target === 'details'));
+  await emit('overlay-region-scroll', { deltaY: 150 });
+  assert.ok(await panel.evaluate(element => [...element.querySelectorAll('*')].some(child => child.scrollTop > 0)));
+  await page.clock.fastForward(7900);
+  await publish({ completed: [detail('c0', '检查第二个回执', '运维', null, 'turn-2')] });
+  await panel.getByText('检查第二个回执').waitFor();
+  await page.clock.fastForward(7900);
+  assert.equal(await panel.count(), 1, '新增条目重新开始 8 秒计时');
+  await emit('overlay-region-hover', 'details');
+  await page.clock.fastForward(200);
+  assert.equal(await panel.getByText('检查第二个回执').count(), 1, '计时结束后悬停仍保留详情');
+  await emit('overlay-region-hover', null);
+  await page.clock.fastForward(500);
+  await panel.waitFor({ state: 'hidden' });
+  await page.clock.fastForward(500);
+
+  await publish({ working, overlayVisible: false });
+  await badge('working').waitFor({ state: 'hidden' });
+  assert.deepEqual(await regions(), []);
+  await publish({ overlayVisible: true });
+  await badge('working').waitFor();
+  assert.equal(await panel.count(), 0, '隐藏期间的新增不会在再次显示时弹出');
+  await publish({ working: replacement });
+  await panel.getByText('验证新会话').waitFor();
+  await page.clock.fastForward(7999);
+  assert.equal(await panel.count(), 1);
+  await page.clock.fastForward(1);
+  await panel.waitFor({ state: 'hidden' });
+  await page.clock.fastForward(500);
+  await page.waitForFunction(() => window.innerWidth === 176);
+
+  await publish({ working: replacement.slice(0, 1) });
+  await emit('overlay-region-hover', 'working');
+  await panel.getByText('验证新会话').waitFor();
+  const priorRegion = (await regions()).find(region => region.target === 'details');
+  await emit('overlay-region-hover', 'completed');
+  await panel.getByText('检查第二个回执').waitFor();
+  const nextRegion = (await regions()).find(region => region.target === 'details');
+  assert.equal(nextRegion.height, priorRegion.height);
+  assert.ok(nextRegion.y > priorRegion.y, '列表等高时，锁定模式仍同步切换气泡造成的位置变化');
+
+  await emit('overlay-region-hover', null);
+  await page.clock.fastForward(500);
+  await page.clock.fastForward(500);
+  await publish({ sessions: null });
+  await badge('working').waitFor({ state: 'hidden' });
+  await publish({ working: replacement.slice(0, 1), completed: [detail('c0', '检查第二个回执', '运维', null, 'turn-2')] });
+  await badge('working').waitFor();
+  assert.equal(await panel.count(), 0, '恢复连接后，同一批会话不会再次弹出');
+  await publish({ sessions: null, settings: { distro: 'Debian', pollIntervalSecs: 60 } });
+  await badge('working').waitFor({ state: 'hidden' });
+  await publish({ working, completed });
+  await badge('working').waitFor();
+  assert.equal(await panel.count(), 0, '切换发行版后，现有会话只建立新基准');
+
+  await publish({ working: replacement });
+  await panel.getByText('验证新会话').waitFor();
+  await emit('overlay-region-hover', 'details');
+  await publish({ completed: [detail('c0', '悬停时新增回执', '运维', null, 'turn-3')] });
+  await panel.getByText('悬停时新增回执').waitFor();
+  await page.clock.fastForward(8100);
+  assert.equal(await panel.getByText('验证新会话').count(), 1);
+  assert.equal(await panel.getByText('悬停时新增回执').count(), 1, '悬停过程中新增的分类在计时结束后仍保持展开');
+  assert.deepEqual(errors, []);
+  await page.close();
+}
 // 发布页只从 dist 加载，响应头使用当前 Tauri CSP，覆盖 Vite 开发模式看不到的限制。
 async function verifyProductionCsp(browser) {
   const repo = fileURLToPath(new URL('../../', import.meta.url));
@@ -93,6 +296,7 @@ async function verifyProductionCsp(browser) {
 
 const browser = await chromium.launch({ executablePath, headless: true, args: ['--no-sandbox'] });
 try {
+  await verifySessionDetails(browser);
   const page = await browser.newPage({ viewport: { width: 1040, height: 760 }, deviceScaleFactor: 1 });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));

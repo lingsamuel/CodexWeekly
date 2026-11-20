@@ -1,5 +1,6 @@
 use serde::Serialize;
 use serde_json::Value;
+use std::cmp::Reverse;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -8,6 +9,21 @@ pub struct SessionCounts {
     pub working: u32,
     pub unread_completed: Option<u32>,
     pub observed_at: i64,
+    pub working_details: Vec<SessionDetail>,
+    pub unread_completed_details: Option<Vec<SessionDetail>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionDetail {
+    pub id: String,
+    pub completion_id: Option<String>,
+    pub title: Option<String>,
+    pub project: Option<String>,
+    pub working_directory: Option<String>,
+    /// 仅用于通过 daemon 关联 Project 名称。
+    #[serde(skip)]
+    pub project_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -31,6 +47,9 @@ pub struct SessionThread {
     status: String,
     updated_at: i64,
     read_state: ReadState,
+    title: Option<String>,
+    project_id: Option<String>,
+    working_directory: Option<String>,
 }
 
 impl SessionThread {
@@ -45,6 +64,21 @@ impl SessionThread {
                 updated_at: self.updated_at,
             }),
             _ => None,
+        }
+    }
+
+    fn detail_order(&self) -> (Reverse<i64>, &str) {
+        (Reverse(self.updated_at), &self.id)
+    }
+
+    fn detail(&self, completion_id: Option<String>) -> SessionDetail {
+        SessionDetail {
+            id: self.id.clone(),
+            completion_id,
+            title: self.title.clone(),
+            project: None,
+            working_directory: self.working_directory.clone(),
+            project_id: self.project_id.clone(),
         }
     }
 }
@@ -108,6 +142,18 @@ pub fn parse_thread_page(response: &Value) -> Result<ThreadPage, String> {
             status: status.to_string(),
             updated_at: row.get("updatedAt").and_then(Value::as_i64).unwrap_or(0),
             read_state,
+            title: nonempty_string(row, "name").map(str::to_owned),
+            project_id: nonempty_string(row, "projectId").map(str::to_owned),
+            working_directory: row
+                .get("cwd")
+                .and_then(Value::as_str)
+                .and_then(|cwd| {
+                    // WSL 的绝对路径允许文件名包含反斜杠，只有 Windows 路径才将其视为分隔符。
+                    let windows_path = !cwd.starts_with('/');
+                    cwd.rsplit(|character| character == '/' || (windows_path && character == '\\'))
+                        .find(|part| !part.is_empty())
+                })
+                .map(str::to_owned),
         });
     }
     let next_cursor = match response.get("nextCursor") {
@@ -122,13 +168,24 @@ pub fn parse_thread_page(response: &Value) -> Result<ThreadPage, String> {
     })
 }
 
-pub fn latest_turn_completed(response: &Value, started_at: i64) -> Result<bool, String> {
+fn nonempty_string<'a>(row: &'a Value, key: &str) -> Option<&'a str> {
+    row.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+/// 从按新到旧排列的轮次列表中识别本次运行期间完成的最后一轮。
+pub fn latest_completed_turn_id(
+    response: &Value,
+    started_at: i64,
+) -> Result<Option<String>, String> {
     let rows = response
         .get("data")
         .and_then(Value::as_array)
         .ok_or("Codex 未返回会话最近一轮状态。")?;
     let Some(turn) = rows.first() else {
-        return Ok(false);
+        return Ok(None);
     };
     match turn.get("status").and_then(Value::as_str) {
         Some("completed") => {
@@ -138,40 +195,57 @@ pub fn latest_turn_completed(response: &Value, started_at: i64) -> Result<bool, 
                 .and_then(Value::as_i64)
                 .filter(|time| *time >= 0)
                 .ok_or("Codex 未返回有效的轮次完成时间。")?;
-            Ok(completed_at >= started_at)
+            Ok((completed_at >= started_at).then(|| {
+                nonempty_string(turn, "id")
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("completedAt:{completed_at}"))
+            }))
         }
-        Some("inProgress" | "failed" | "interrupted") => Ok(false),
+        Some("inProgress" | "failed" | "interrupted") => Ok(None),
         _ => Err("Codex 返回了未知轮次状态。".into()),
     }
 }
 
+/// 根据已完整读取的会话快照和轮次缓存整理两类气泡的计数与详情。
 pub fn summarize_threads(
     threads: &[SessionThread],
     receipts_available: bool,
-    completed: &HashMap<CompletionKey, bool>,
+    completed: &HashMap<CompletionKey, Option<String>>,
     observed_at: i64,
 ) -> SessionCounts {
-    let working = threads
-        .iter()
-        .filter(|thread| thread.status == "active")
-        .count() as u32;
-    let mut unread_completed = receipts_available.then_some(0);
+    let mut working = Vec::new();
+    let mut unread = Vec::new();
+    let mut unread_available = receipts_available;
     for thread in threads {
         if matches!(thread.read_state, ReadState::Unavailable) {
-            unread_completed = None;
+            unread_available = false;
         }
-        if let Some(key) = thread.completion_key() {
+        if thread.status == "active" {
+            working.push(thread);
+        } else if let Some(key) = thread.completion_key() {
             match completed.get(&key) {
-                Some(true) => unread_completed = unread_completed.map(|count| count + 1),
-                Some(false) => {}
+                Some(Some(completion_id)) => unread.push((thread, completion_id)),
+                Some(None) => {}
                 // 不完整的查询不能冒充“没有未读”；蓝色计数仍可独立使用。
-                None => unread_completed = None,
+                None => unread_available = false,
             }
         }
     }
+    working.sort_unstable_by_key(|&thread| thread.detail_order());
+    unread.sort_unstable_by_key(|&(thread, _)| thread.detail_order());
     SessionCounts {
-        working,
-        unread_completed,
+        working: working.len() as u32,
+        unread_completed: unread_available.then_some(unread.len() as u32),
         observed_at,
+        working_details: working
+            .into_iter()
+            .map(|thread| thread.detail(None))
+            .collect(),
+        unread_completed_details: unread_available.then(|| {
+            unread
+                .into_iter()
+                .map(|(thread, id)| thread.detail(Some(id.clone())))
+                .collect()
+        }),
     }
 }

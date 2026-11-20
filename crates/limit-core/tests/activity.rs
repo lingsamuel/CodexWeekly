@@ -1,4 +1,4 @@
-use limit_core::activity::{latest_turn_completed, parse_thread_page, summarize_threads};
+use limit_core::activity::{latest_completed_turn_id, parse_thread_page, summarize_threads};
 use serde_json::json;
 use std::collections::HashMap;
 
@@ -23,8 +23,8 @@ fn counts_top_level_active_threads_and_completed_unread_only() {
         .iter()
         .filter_map(|thread| {
             thread.completion_key().map(|key| {
-                let done = key.thread_id == "done";
-                (key, done)
+                let completion_id = (key.thread_id == "done").then(|| "last-turn".into());
+                (key, completion_id)
             })
         })
         .collect();
@@ -32,6 +32,10 @@ fn counts_top_level_active_threads_and_completed_unread_only() {
     assert_eq!(counts.working, 1);
     assert_eq!(counts.unread_completed, Some(1));
     assert_eq!(counts.observed_at, 100);
+    let details = counts.unread_completed_details.unwrap();
+    assert_eq!(details.len(), 1);
+    assert_eq!(details[0].id, "done");
+    assert_eq!(details[0].completion_id.as_deref(), Some("last-turn"));
 }
 
 #[test]
@@ -55,6 +59,41 @@ fn unavailable_receipts_or_partial_completion_is_not_reported_as_zero() {
 }
 
 #[test]
+fn working_details_include_only_the_display_metadata_in_stable_order() {
+    let page = parse_thread_page(&json!({"data":[
+        {"id":"z","status":{"type":"active"},"updatedAt":3,"name":"检查安装包","projectId":"private-id","cwd":"/home/user/Overlay\\Work/"},
+        {"id":"a","status":{"type":"active"},"updatedAt":3,"name":"  ","cwd":"/"},
+        {"id":"older","status":{"type":"active"},"updatedAt":2,"cwd":"C:\\Projects\\Other"},
+        {"id":"child","status":{"type":"active"},"updatedAt":4,"parentThreadId":"a"}
+    ]}))
+    .unwrap();
+    let counts = summarize_threads(&page.threads, false, &HashMap::new(), 100);
+
+    assert_eq!(
+        serde_json::to_value(counts).unwrap(),
+        json!({"working":3,"unreadCompleted":null,"observedAt":100,"workingDetails":[
+            {"id":"a","title":null,"project":null,"workingDirectory":null,"completionId":null},
+            {"id":"z","title":"检查安装包","project":null,"workingDirectory":"Overlay\\Work","completionId":null},
+            {"id":"older","title":null,"project":null,"workingDirectory":"Other","completionId":null}
+        ],"unreadCompletedDetails":null})
+    );
+}
+
+#[test]
+fn completed_turn_prefers_its_id_and_falls_back_to_its_completion_time() {
+    let response = json!({"data":[{"id":"finished","status":"completed","completedAt":101}]});
+    assert_eq!(
+        json!(latest_completed_turn_id(&response, 100).unwrap()),
+        json!("finished")
+    );
+    let response = json!({"data":[{"status":"completed","completedAt":101}]});
+    assert_eq!(
+        json!(latest_completed_turn_id(&response, 100).unwrap()),
+        json!("completedAt:101")
+    );
+}
+
+#[test]
 fn completion_cache_key_changes_with_read_revision_or_activity() {
     let make = |revision: &str, updated: i64| {
         parse_thread_page(&json!({"data":[{"id":"a","status":{"type":"idle"},"updatedAt":updated}],"readStates":{"a":{"firstUnread":{"type":"threadStart"},"revision":revision}},"nextCursor":null})).unwrap().threads[0].completion_key().unwrap()
@@ -74,35 +113,46 @@ fn validates_pagination_and_runtime_status() {
 
 #[test]
 fn latest_turn_must_really_be_completed() {
-    assert!(latest_turn_completed(
+    assert!(latest_completed_turn_id(
         &json!({"data":[{"status":"completed","completedAt":101}]}),
         100
     )
-    .unwrap());
+    .unwrap()
+    .is_some());
     for status in ["inProgress", "failed", "interrupted"] {
-        assert!(!latest_turn_completed(
+        assert!(latest_completed_turn_id(
             &json!({"data":[{"status":status,"completedAt":101}]}),
             100
         )
-        .unwrap());
+        .unwrap()
+        .is_none());
     }
-    assert!(!latest_turn_completed(&json!({"data":[]}), 100).unwrap());
-    assert!(latest_turn_completed(&json!({}), 100).is_err());
+    assert_eq!(
+        latest_completed_turn_id(&json!({"data":[]}), 100).unwrap(),
+        None
+    );
+    assert!(latest_completed_turn_id(&json!({}), 100).is_err());
 }
 
 #[test]
 fn completion_time_must_be_within_this_application_run() {
     let response = |time| json!({"data":[{"status":"completed","completedAt":time}]});
-    assert!(!latest_turn_completed(&response(99), 100).unwrap());
-    assert!(latest_turn_completed(&response(100), 100).unwrap());
-    assert!(latest_turn_completed(&response(101), 100).unwrap());
+    assert!(latest_completed_turn_id(&response(99), 100)
+        .unwrap()
+        .is_none());
+    assert!(latest_completed_turn_id(&response(100), 100)
+        .unwrap()
+        .is_some());
+    assert!(latest_completed_turn_id(&response(101), 100)
+        .unwrap()
+        .is_some());
 }
 
 #[test]
 fn missing_or_invalid_completion_time_is_unknown() {
-    assert!(latest_turn_completed(&json!({"data":[{"status":"completed"}]}), 100).is_err());
+    assert!(latest_completed_turn_id(&json!({"data":[{"status":"completed"}]}), 100).is_err());
     for time in [json!(null), json!(-1), json!("101"), json!(101.5)] {
-        assert!(latest_turn_completed(
+        assert!(latest_completed_turn_id(
             &json!({"data":[{"status":"completed","completedAt":time}]}),
             100
         )
@@ -134,7 +184,7 @@ fn old_thread_can_complete_again_after_startup_without_counting_old_history() {
             };
             let response =
                 json!({"data":[{"status":"completed","startedAt":1,"completedAt":finished_at}]});
-            Some((key, latest_turn_completed(&response, 100).unwrap()))
+            Some((key, latest_completed_turn_id(&response, 100).unwrap()))
         })
         .collect();
     for observed_at in [120, 200] {
@@ -147,6 +197,6 @@ fn old_thread_can_complete_again_after_startup_without_counting_old_history() {
 #[test]
 fn restarting_application_excludes_previous_run_completions() {
     let response = json!({"data":[{"status":"completed","completedAt":150}]});
-    assert!(latest_turn_completed(&response, 100).unwrap());
-    assert!(!latest_turn_completed(&response, 200).unwrap());
+    assert!(latest_completed_turn_id(&response, 100).unwrap().is_some());
+    assert!(latest_completed_turn_id(&response, 200).unwrap().is_none());
 }

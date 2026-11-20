@@ -5,8 +5,8 @@ use crate::{
 use futures_util::{SinkExt, StreamExt};
 use limit_core::{
     activity::{
-        latest_turn_completed, parse_thread_page, summarize_threads, CompletionKey, SessionCounts,
-        SessionThread,
+        latest_completed_turn_id, parse_thread_page, summarize_threads, CompletionKey,
+        SessionCounts, SessionDetail, SessionThread,
     },
     settings::Settings,
 };
@@ -28,7 +28,7 @@ pub(crate) struct ActivityClient {
     _process: Child,
     request_id: u64,
     started_at: i64,
-    completed: HashMap<CompletionKey, bool>,
+    completed: HashMap<CompletionKey, Option<String>>,
 }
 
 impl ActivityClient {
@@ -144,7 +144,7 @@ impl ActivityClient {
             }
             // 只取最后一轮的元数据，不加载聊天内容，也不修改官方已读回执。
             match self.rpc("thread/turns/list",json!({"threadId":key.thread_id,"limit":1,"sortDirection":"desc","itemsView":"notLoaded"})).await {
-                Ok(response) => if let Ok(completed) = latest_turn_completed(&response, self.started_at) {
+                Ok(response) => if let Ok(completed) = latest_completed_turn_id(&response, self.started_at) {
                     self.completed.insert(key,completed);
                 },
                 // 未读详情不可用不应抹去已经完整读取的工作中数量。
@@ -157,6 +157,62 @@ impl ActivityClient {
             &self.completed,
             now(),
         ))
+    }
+
+    async fn fill_projects(&mut self, counts: &mut SessionCounts) {
+        let mut projects = HashMap::<String, Vec<&mut SessionDetail>>::new();
+        for detail in counts
+            .working_details
+            .iter_mut()
+            .chain(counts.unread_completed_details.iter_mut().flatten())
+        {
+            if let Some(project_id) = detail.project_id.take() {
+                projects.entry(project_id).or_default().push(detail);
+            }
+        }
+
+        let mut cursor = None::<String>;
+        let mut cursors = HashSet::new();
+        while !projects.is_empty() {
+            let Ok(response) = self
+                .rpc("project/list", json!({"limit":100,"cursor":cursor}))
+                .await
+            else {
+                return;
+            };
+            let Some(rows) = response.get("data").and_then(Value::as_array) else {
+                return;
+            };
+            for row in rows {
+                let Some(id) = row.get("id").and_then(Value::as_str) else {
+                    continue;
+                };
+                let Some(name) = row
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                else {
+                    continue;
+                };
+                if let Some(details) = projects.remove(id) {
+                    for detail in details {
+                        detail.project = Some(name.to_owned());
+                    }
+                }
+            }
+            let Some(next) = response
+                .get("nextCursor")
+                .and_then(Value::as_str)
+                .filter(|next| !next.is_empty())
+            else {
+                break;
+            };
+            if !cursors.insert(next.to_owned()) {
+                break;
+            }
+            cursor = Some(next.to_owned());
+        }
     }
 }
 
@@ -174,14 +230,23 @@ pub fn start(app: AppHandle, started_at: i64) {
                 client = None;
             }
             let result = tokio::select! {
-                result = tokio::time::timeout(Duration::from_secs(35),async {
-                    if client.is_none() {
-                        // 重连或切换发行版仍沿用程序入口的时刻，不截断本次运行已完成的任务。
-                        client = Some(ActivityClient::connect(&settings, started_at).await?);
-                        distro = settings.distro.clone();
+                result = async {
+                    let mut counts = tokio::time::timeout(Duration::from_secs(35), async {
+                        if client.is_none() {
+                            // 重连或切换发行版仍沿用程序入口的时刻，不截断本次运行已完成的任务。
+                            client = Some(ActivityClient::connect(&settings, started_at).await?);
+                            distro = settings.distro.clone();
+                        }
+                        client.as_mut().unwrap().fetch_counts().await
+                    })
+                    .await
+                    .unwrap_or_else(|_| Err("读取 Codex 会话统计超时。".into()))?;
+                    if let Some(client) = &mut client {
+                        // 项目名称可独立降级为工作目录。查询失败时保留计数和标题。
+                        let _ = tokio::time::timeout(Duration::from_secs(2), client.fill_projects(&mut counts)).await;
                     }
-                    client.as_mut().unwrap().fetch_counts().await
-                }) => result.unwrap_or_else(|_|Err("读取 Codex 会话统计超时。".into())),
+                    Ok(counts)
+                } => result,
                 _ = state.shutdown.notified() => return,
             };
             if result.is_err() {

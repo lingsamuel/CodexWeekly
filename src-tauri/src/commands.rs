@@ -1,5 +1,6 @@
 use crate::{
     collector,
+    overlay_input::HitRegion,
     state::{broadcast, now, AppSnapshot, AppState},
     windows,
 };
@@ -94,6 +95,28 @@ pub fn begin_drag(app: AppHandle, state: State<'_, AppState>) -> Result<(), Stri
         .ok_or("悬浮窗尚未创建。")?
         .start_dragging()
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn set_overlay_details(
+    window: tauri::WebviewWindow,
+    expanded: bool,
+) -> Result<&'static str, String> {
+    if window.label() != "overlay" {
+        return Err("只能从悬浮窗设置会话详情。".into());
+    }
+    windows::set_details(window.app_handle(), expanded)
+}
+
+#[tauri::command]
+pub fn set_overlay_hit_regions(
+    window: tauri::WebviewWindow,
+    regions: Vec<HitRegion>,
+) -> Result<(), String> {
+    if window.label() != "overlay" {
+        return Err("只能从悬浮窗设置鼠标区域。".into());
+    }
+    crate::overlay_input::set_regions(regions)
 }
 
 #[tauri::command]

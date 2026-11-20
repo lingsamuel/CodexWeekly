@@ -23,7 +23,7 @@ use windows_sys::Win32::{
             GetWindowRect, DEVICE_NOTIFY_WINDOW_HANDLE, PBT_APMRESUMEAUTOMATIC,
             PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PBT_POWERSETTINGCHANGE, SIZE_MINIMIZED,
             WM_DISPLAYCHANGE, WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_NCDESTROY,
-            WM_POWERBROADCAST, WM_SETTINGCHANGE, WM_SIZE,
+            WM_POWERBROADCAST, WM_SETTINGCHANGE, WM_SIZE, WM_WINDOWPOSCHANGED,
         },
     },
 };
@@ -76,6 +76,55 @@ pub fn is_paused(app: &AppHandle) -> bool {
     })
 }
 
+/// 让系统拖动和锁定时的气泡拖动共用保存、DPI 处理和恢复互斥。
+pub fn begin_drag(app: &AppHandle) {
+    let state = app.state::<RecoveryState>();
+    state.generation.fetch_add(1, Ordering::Relaxed);
+    if let Ok(mut drag) = state.drag.lock() {
+        drag.begin();
+    };
+}
+
+pub fn is_dragging(app: &AppHandle) -> bool {
+    let state = app.state::<RecoveryState>();
+    state.drag.lock().map(|drag| drag.active()).unwrap_or(false)
+}
+
+pub fn cancel_drag(app: &AppHandle) {
+    if let Ok(mut drag) = app.state::<RecoveryState>().drag.lock() {
+        drag.interrupt();
+    }
+    request(app);
+}
+
+pub fn finish_drag(app: &AppHandle, hwnd: HWND) {
+    let mut rect = RECT::default();
+    let valid = unsafe { GetWindowRect(hwnd, &mut rect) } != 0;
+    let completed = app
+        .state::<RecoveryState>()
+        .drag
+        .lock()
+        .ok()
+        .and_then(|mut drag| {
+            if valid {
+                drag.finish()
+            } else {
+                drag.interrupt();
+                None
+            }
+        });
+    if let Some(revision) = completed {
+        save_drag(
+            app,
+            OverlayPosition {
+                x: rect.left + crate::windows::ring_offset(app, hwnd),
+                y: rect.top,
+            },
+            revision,
+        );
+    }
+}
+
 fn request(app: &AppHandle) {
     let state = app.state::<RecoveryState>();
     let generation = state.generation.fetch_add(1, Ordering::Relaxed) + 1;
@@ -121,7 +170,7 @@ fn save_drag(app: &AppHandle, position: OverlayPosition, revision: u64) {
                 .lock()
                 .map(|drag| drag.is_current(revision))
                 .unwrap_or(false);
-            if data.preferences.locked || !current {
+            if !current {
                 return Ok(());
             }
             let mut preferences = data.preferences.clone();
@@ -167,34 +216,8 @@ unsafe extern "system" fn window_proc(
             }
             request(&hook.app);
         }
-        WM_ENTERSIZEMOVE => {
-            state.generation.fetch_add(1, Ordering::Relaxed);
-            if let Ok(mut drag) = state.drag.lock() {
-                drag.begin();
-            }
-        }
-        WM_EXITSIZEMOVE => {
-            let mut rect = RECT::default();
-            let valid = GetWindowRect(hwnd, &mut rect) != 0;
-            let completed = state.drag.lock().ok().and_then(|mut drag| {
-                if valid {
-                    drag.finish()
-                } else {
-                    drag.interrupt();
-                    None
-                }
-            });
-            if let Some(revision) = completed {
-                save_drag(
-                    &hook.app,
-                    OverlayPosition {
-                        x: rect.left,
-                        y: rect.top,
-                    },
-                    revision,
-                );
-            }
-        }
+        WM_ENTERSIZEMOVE => begin_drag(&hook.app),
+        WM_EXITSIZEMOVE => finish_drag(&hook.app, hwnd),
         WM_DISPLAYCHANGE | WM_SETTINGCHANGE | WM_DPICHANGED => {
             // 用户跨 DPI 显示器拖动时，保留拖动生命周期并由 Windows 正常缩放。
             let dragging = state.drag.lock().map(|drag| drag.active()).unwrap_or(true);
@@ -240,5 +263,9 @@ unsafe extern "system" fn window_proc(
         }
         _ => {}
     }
-    DefSubclassProc(hwnd, message, wparam, lparam)
+    let result = DefSubclassProc(hwnd, message, wparam, lparam);
+    if message == WM_WINDOWPOSCHANGED {
+        let _ = crate::overlay_input::sync();
+    }
+    result
 }

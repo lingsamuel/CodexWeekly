@@ -1,6 +1,30 @@
 use limit_core::settings::OverlayPosition;
 
 pub const OVERLAY_SIZE: f64 = 176.0;
+pub const DETAILS_WIDTH: f64 = 288.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DetailsSide {
+    Left,
+    Right,
+}
+
+impl DetailsSide {
+    pub fn ring_offset(self, scale: f64) -> i32 {
+        match self {
+            Self::Left => (DETAILS_WIDTH * scale).round() as i32,
+            Self::Right => 0,
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct WorkArea {
@@ -38,21 +62,33 @@ impl WorkArea {
     }
 }
 
+pub fn work_area(
+    preferred: Option<OverlayPosition>,
+    areas: &[WorkArea],
+    primary: usize,
+) -> Option<&WorkArea> {
+    preferred
+        .and_then(|point| {
+            areas
+                .iter()
+                .filter(|area| area.contains_overlay(point))
+                .max_by_key(|area| area.intersection(point))
+        })
+        .or_else(|| areas.get(primary))
+        .or_else(|| areas.first())
+}
+
 pub fn placement(
     preferred: Option<OverlayPosition>,
     areas: &[WorkArea],
     primary: usize,
 ) -> Option<(OverlayPosition, (u32, u32))> {
+    let area = work_area(preferred, areas, primary)?;
     if let Some(point) = preferred {
-        if let Some(area) = areas
-            .iter()
-            .filter(|area| area.contains_overlay(point))
-            .max_by_key(|area| area.intersection(point))
-        {
+        if area.contains_overlay(point) {
             return Some((point, area.overlay_size()));
         }
     }
-    let area = areas.get(primary).or_else(|| areas.first())?;
     let (width, height) = area.overlay_size();
     Some((
         OverlayPosition {
@@ -62,6 +98,16 @@ pub fn placement(
         },
         (width, height),
     ))
+}
+
+pub fn details_side(anchor: OverlayPosition, area: WorkArea) -> DetailsSide {
+    let left = i64::from(anchor.x) - i64::from(area.x);
+    let right = i64::from(area.width) - left - i64::from(area.overlay_size().0);
+    if right >= (DETAILS_WIDTH * area.scale).round() as i64 || right >= left {
+        DetailsSide::Right
+    } else {
+        DetailsSide::Left
+    }
 }
 
 #[derive(Default)]

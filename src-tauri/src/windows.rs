@@ -1,10 +1,26 @@
-use crate::overlay_geometry::{placement, WorkArea, OVERLAY_SIZE};
+use crate::overlay_geometry::{
+    details_side, placement, work_area, DetailsSide, WorkArea, DETAILS_WIDTH, OVERLAY_SIZE,
+};
+use crate::overlay_input;
 use crate::state::{broadcast, AppState};
+use std::sync::Mutex;
 use tauri::{
-    AppHandle, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewUrl,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewUrl,
     WebviewWindowBuilder,
 };
-use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
+use windows_sys::Win32::{
+    Foundation::HWND,
+    UI::{
+        HiDpi::GetDpiForWindow,
+        WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE},
+    },
+};
+
+#[derive(Default)]
+struct DetailsLayout {
+    expanded: bool,
+    side: Option<DetailsSide>,
+}
 
 // 仅按采样更新 SVG，软件合成可减少空闲 GPU 资源。
 // 同一 WebView2 环境内的窗口须保持一致参数，避免创建选项冲突。
@@ -30,6 +46,7 @@ pub fn open_dashboard(app: &AppHandle) -> Result<(), String> {
 
 pub fn create_overlay(app: &AppHandle) -> Result<(), String> {
     let preferences = app.state::<AppState>().lock()?.preferences.clone();
+    app.manage(Mutex::new(DetailsLayout::default()));
     let overlay = WebviewWindowBuilder::new(
         app,
         "overlay",
@@ -52,6 +69,7 @@ pub fn create_overlay(app: &AppHandle) -> Result<(), String> {
     .map_err(|error| error.to_string())?;
     restore_overlay_geometry(app, false)?;
     crate::overlay_recovery::install(app, &overlay)?;
+    overlay_input::install(app, &overlay, preferences.locked)?;
     overlay
         .set_ignore_cursor_events(preferences.locked)
         .map_err(|error| error.to_string())?;
@@ -85,8 +103,33 @@ pub fn set_locked(app: &AppHandle, locked: bool) -> Result<(), String> {
     }
     data.preferences = preferences;
     drop(data);
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        if let Err(error) = overlay_input::set_enabled(locked) {
+            crate::overlay_recovery::report_error(&handle, &error);
+        }
+    })
+    .map_err(|error| error.to_string())?;
     broadcast(app);
     Ok(())
+}
+
+pub fn set_details(app: &AppHandle, expanded: bool) -> Result<&'static str, String> {
+    let state = app.state::<Mutex<DetailsLayout>>();
+    state.lock().map_err(|error| error.to_string())?.expanded = expanded;
+    if !crate::overlay_recovery::is_paused(app) {
+        restore_overlay_geometry(app, false)?;
+    }
+    let layout = state.lock().map_err(|error| error.to_string())?;
+    Ok(layout.side.unwrap_or(DetailsSide::Right).as_str())
+}
+
+/// 保存圆环的屏幕位置。详情在左侧时，原生窗口原点位于详情的左边。
+pub fn ring_offset(app: &AppHandle, hwnd: HWND) -> i32 {
+    let state = app.state::<Mutex<DetailsLayout>>();
+    let side = state.lock().ok().and_then(|layout| layout.side);
+    let scale = f64::from(unsafe { GetDpiForWindow(hwnd) }) / 96.0;
+    side.map_or(0, |side| side.ring_offset(scale))
 }
 
 pub fn set_visible(app: &AppHandle, visible: bool) -> Result<(), String> {
@@ -174,9 +217,27 @@ pub fn restore_overlay_geometry(app: &AppHandle, repaint: bool) -> Result<(), St
     else {
         return Ok(());
     };
-    let position = PhysicalPosition::new(point.x, point.y);
-    let predicted_size = PhysicalSize::new(width, height);
-    let moved = overlay
+    let area = work_area(preferences.overlay_position, &areas, primary_index).unwrap();
+    let state = app.state::<Mutex<DetailsLayout>>();
+    let (side, side_changed) = {
+        let mut layout = state.lock().map_err(|error| error.to_string())?;
+        let side = layout.expanded.then(|| details_side(point, *area));
+        let side_changed = layout.side != side;
+        layout.side = side;
+        (side, side_changed)
+    };
+    let logical_width = OVERLAY_SIZE + if side.is_some() { DETAILS_WIDTH } else { 0.0 };
+    let position = PhysicalPosition::new(
+        point.x - side.map_or(0, |side| side.ring_offset(area.scale)),
+        point.y,
+    );
+    let logical = LogicalSize::new(logical_width, OVERLAY_SIZE);
+    let predicted_size = if side.is_some() {
+        logical.to_physical(area.scale)
+    } else {
+        PhysicalSize::new(width, height)
+    };
+    let mut moved = overlay
         .outer_position()
         .map_err(|error| error.to_string())?
         != position;
@@ -187,7 +248,16 @@ pub fn restore_overlay_geometry(app: &AppHandle, repaint: bool) -> Result<(), St
     }
     // 跨不同 DPI 的屏幕边缘时，以移动后 HWND 的真实 DPI 为准。
     let scale = overlay.scale_factor().map_err(|error| error.to_string())?;
-    let logical = LogicalSize::new(OVERLAY_SIZE, OVERLAY_SIZE);
+    if let Some(DetailsSide::Left) = side {
+        let corrected =
+            PhysicalPosition::new(point.x - DetailsSide::Left.ring_offset(scale), point.y);
+        if corrected != position {
+            overlay
+                .set_position(corrected)
+                .map_err(|error| error.to_string())?;
+            moved = true;
+        }
+    }
     let size: PhysicalSize<u32> = logical.to_physical(scale);
     let resized = overlay.inner_size().map_err(|error| error.to_string())? != size;
     if resized {
@@ -223,6 +293,13 @@ pub fn restore_overlay_geometry(app: &AppHandle, repaint: bool) -> Result<(), St
                 })
                 .map_err(|error| error.to_string())?;
         }
+    }
+    if side_changed {
+        let _ = app.emit_to(
+            "overlay",
+            "overlay-details-side",
+            side.unwrap_or(DetailsSide::Right).as_str(),
+        );
     }
     Ok(())
 }

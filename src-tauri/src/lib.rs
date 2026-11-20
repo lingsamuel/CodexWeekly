@@ -4,6 +4,7 @@ mod activity;
 mod collector;
 mod commands;
 mod overlay_geometry;
+mod overlay_input;
 mod overlay_recovery;
 mod state;
 mod tray;
@@ -35,7 +36,16 @@ pub fn run() {
         });
         let report = match &result {
             Ok(counts) => {
-                serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"startedAt":started_at,"ok":true,"sessions":counts})
+                serde_json::json!({
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "startedAt": started_at,
+                    "ok": true,
+                    "sessions": {
+                        "working": counts.working,
+                        "unreadCompleted": counts.unread_completed,
+                        "observedAt": counts.observed_at,
+                    },
+                })
             }
             Err(error) => {
                 serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"startedAt":started_at,"ok":false,"error":error})
@@ -80,6 +90,8 @@ pub fn run() {
             commands::set_locked,
             commands::set_overlay_visible,
             commands::begin_drag,
+            commands::set_overlay_details,
+            commands::set_overlay_hit_regions,
             commands::open_dashboard,
             commands::list_distros,
             commands::set_tray_image

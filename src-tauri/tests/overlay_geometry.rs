@@ -2,7 +2,7 @@
 mod overlay_geometry;
 
 use limit_core::settings::OverlayPosition;
-use overlay_geometry::{placement, DragState, WorkArea, OVERLAY_SIZE};
+use overlay_geometry::{details_side, placement, DetailsSide, DragState, WorkArea, OVERLAY_SIZE};
 
 fn screen(x: i32, scale: f64) -> WorkArea {
     WorkArea {
@@ -54,6 +54,19 @@ fn mixed_dpi_edge_uses_largest_intersection() {
         placement(Some(saved), &[screen(0, 1.0), screen(1920, 1.5)], 0).unwrap(),
         (saved, (264, 264))
     );
+}
+
+#[test]
+fn details_use_available_side_and_preserve_ring_anchor_at_mixed_dpi() {
+    let area = screen(-1920, 1.5);
+    let left_anchor = OverlayPosition { x: -1900, y: 30 };
+    let right_anchor = OverlayPosition { x: -280, y: 30 };
+    assert_eq!(details_side(left_anchor, area), DetailsSide::Right);
+    let side = details_side(right_anchor, area);
+    assert_eq!(side, DetailsSide::Left);
+    assert_eq!(side.ring_offset(1.5), 432);
+    let native_x = right_anchor.x - side.ring_offset(1.5);
+    assert_eq!(native_x + side.ring_offset(1.5), right_anchor.x);
 }
 
 #[test]
