@@ -38,6 +38,15 @@ impl Store {
                PRIMARY KEY(account_key, recorded_at)
              );
              CREATE INDEX IF NOT EXISTS samples_time ON samples(recorded_at);
+             CREATE TABLE IF NOT EXISTS source_latest (
+               source_key TEXT PRIMARY KEY NOT NULL, account_key TEXT NOT NULL,
+               recorded_at INTEGER NOT NULL, remaining_percent REAL NOT NULL,
+               resets_at INTEGER, window_minutes INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS personal_account_links (
+               email_key TEXT NOT NULL, account_key TEXT NOT NULL,
+               PRIMARY KEY(email_key, account_key)
+             );
              CREATE TABLE IF NOT EXISTS preferences (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);"
         )?;
         Ok(Self { connection })
@@ -89,7 +98,40 @@ impl Store {
     pub fn latest(&self) -> rusqlite::Result<Option<ParsedQuota>> {
         self.connection.query_row(
             "SELECT account_key,recorded_at,remaining_percent,resets_at,window_minutes FROM samples ORDER BY recorded_at DESC,rowid DESC LIMIT 1",
-            [], |row| Ok(ParsedQuota { account_key: row.get(0)?, sample: sample_row(row,1)? }),
+            [], quota_row,
+        ).optional()
+    }
+
+    /// 曲线按账号共享，离线回显必须来自该实例最后一次成功的采样。
+    pub fn record_for_source(
+        &self,
+        source: &str,
+        quota: &ParsedQuota,
+        disconnected: bool,
+    ) -> rusqlite::Result<()> {
+        let transaction = self.connection.unchecked_transaction()?;
+        self.record_with_boundary(quota, disconnected)?;
+        if let Some(email_key) = &quota.personal_email_key {
+            transaction.execute(
+                "INSERT INTO personal_account_links(email_key,account_key) VALUES(?1,?2) ON CONFLICT DO NOTHING",
+                params![email_key, quota.account_key],
+            )?;
+        }
+        let sample = &quota.sample;
+        transaction.execute(
+            "INSERT INTO source_latest(source_key,account_key,recorded_at,remaining_percent,resets_at,window_minutes)
+             VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(source_key) DO UPDATE SET account_key=excluded.account_key,
+             recorded_at=excluded.recorded_at,remaining_percent=excluded.remaining_percent,
+             resets_at=excluded.resets_at,window_minutes=excluded.window_minutes",
+            params![source, quota.account_key, sample.recorded_at, sample.remaining_percent, sample.resets_at, sample.window_minutes],
+        )?;
+        transaction.commit()
+    }
+
+    pub fn latest_for_source(&self, source: &str) -> rusqlite::Result<Option<ParsedQuota>> {
+        self.connection.query_row(
+            "SELECT account_key,recorded_at,remaining_percent,resets_at,window_minutes FROM source_latest WHERE source_key=?1",
+            [source], quota_row,
         ).optional()
     }
 
@@ -100,11 +142,22 @@ impl Store {
         until: i64,
         max_points: usize,
     ) -> rusqlite::Result<Vec<HistoryPoint>> {
+        // 同一邮箱关联了不同账号 ID 时保留原始记录各自的归属，避免歧义导致误合并。
         let mut statement = self.connection.prepare(
-            "SELECT recorded_at,remaining_percent,resets_at,window_minutes,segment_start FROM samples
-             WHERE account_key=?1 AND recorded_at>=?2 AND recorded_at<=?3 ORDER BY recorded_at",
+            "WITH confirmed_links AS (
+               SELECT email_key, MIN(account_key) AS account_key FROM personal_account_links
+               GROUP BY email_key HAVING COUNT(*)=1
+             ), current_account AS (
+               SELECT COALESCE((SELECT account_key FROM confirmed_links WHERE email_key=?1), ?1) AS key
+             )
+             SELECT recorded_at,remaining_percent,resets_at,window_minutes,segment_start FROM samples
+             WHERE account_key IN (
+               SELECT key FROM current_account UNION
+               SELECT email_key FROM confirmed_links WHERE account_key=(SELECT key FROM current_account)
+             ) AND recorded_at>=?2 AND recorded_at<=?3
+             ORDER BY recorded_at,(account_key=(SELECT key FROM current_account)) DESC,rowid DESC",
         )?;
-        let points = statement
+        let mut points = statement
             .query_map(params![account, since, until], |row| {
                 Ok(HistoryPoint {
                     sample: sample_row(row, 0)?,
@@ -112,14 +165,16 @@ impl Store {
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        points.dedup_by_key(|point| point.sample.recorded_at);
         // 分段在采集时持久化；修改设置或缩放图表不会重新解释历史断线。
         Ok(downsample(points, max_points))
     }
 
     pub fn prune(&self, before: i64) -> rusqlite::Result<()> {
-        self.connection
-            .execute("DELETE FROM samples WHERE recorded_at<?1", [before])?;
-        Ok(())
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute("DELETE FROM samples WHERE recorded_at<?1", [before])?;
+        transaction.execute("DELETE FROM source_latest WHERE recorded_at<?1", [before])?;
+        transaction.commit()
     }
 
     pub fn preferences(&self) -> rusqlite::Result<Preferences> {
@@ -147,6 +202,14 @@ impl Store {
         self.connection.execute("INSERT INTO preferences(id,value) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET value=excluded.value", [text])?;
         Ok(())
     }
+}
+
+fn quota_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ParsedQuota> {
+    Ok(ParsedQuota {
+        account_key: row.get(0)?,
+        personal_email_key: None,
+        sample: sample_row(row, 1)?,
+    })
 }
 
 fn sample_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<QuotaSample> {

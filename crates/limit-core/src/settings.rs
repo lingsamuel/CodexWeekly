@@ -1,8 +1,17 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SourceKind {
+    #[default]
+    Wsl,
+    Windows,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
+    pub source: SourceKind,
     pub distro: String,
     pub poll_interval_secs: u64,
 }
@@ -10,6 +19,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            source: SourceKind::default(),
             distro: String::new(),
             poll_interval_secs: 60,
         }

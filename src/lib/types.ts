@@ -1,4 +1,5 @@
 export interface Settings {
+  source: 'wsl' | 'windows';
   distro: string;
   pollIntervalSecs: number;
 }
@@ -37,6 +38,8 @@ export interface OverlayHitRegion {
   height: number;
 }
 export interface AppSnapshot {
+  sourceRevision: number;
+  historyRevision: number;
   sessions: SessionCounts | null;
   sessionError: string | null;
   quota: QuotaSample | null;

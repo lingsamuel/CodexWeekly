@@ -15,7 +15,7 @@ import type { OverlayTarget } from '../lib/types';
 const nativeInput = desktopMode && !demoMode;
 
 export function Overlay() {
-  const { snapshot } = useSnapshot();
+  const snapshot = useSnapshot();
   const ringHost = useRef<HTMLDivElement>(null);
   const workingBadge = useRef<HTMLSpanElement>(null);
   const completedBadge = useRef<HTMLSpanElement>(null);
@@ -26,7 +26,7 @@ export function Overlay() {
   const stale = snapshot.status !== 'online';
   const [actionError, setActionError] = useState<string | null>(null);
   const showError = (error: unknown) => setActionError(errorMessage(error));
-  const { groups, hover } = useSessionDetails(snapshot.sessions, snapshot.overlayVisible, snapshot.settings.distro);
+  const { groups, hover } = useSessionDetails(snapshot.sessions, snapshot.overlayVisible, snapshot.sourceRevision);
   const wantsDetails = groups.length > 0;
   const { expanded, side, setSide } = useOverlayDetailsWindow(wantsDetails, snapshot.overlayVisible, showError);
   const panelVisible = expanded && wantsDetails;
@@ -98,12 +98,12 @@ export function Overlay() {
     if (!svg) return;
     const controller = new AbortController();
     void renderTrayImage(svg, roundedQuota, stale, controller.signal).then(rgba => {
-      if (!controller.signal.aborted) return setTrayImage(rgba);
+      if (!controller.signal.aborted) return setTrayImage(rgba, snapshot.historyRevision);
     }).catch(error => {
       if (!controller.signal.aborted) setActionError(errorMessage(error));
     });
     return () => controller.abort();
-  }, [roundedQuota, stale]);
+  }, [roundedQuota, stale, snapshot.historyRevision]);
   const status = snapshot.status === 'online' ? `${dateTime(snapshot.quota?.recordedAt)} 已同步` : snapshot.status === 'connecting' ? '正在连接' : snapshot.quota ? '离线 · 上次读数' : '离线 · 尚无读数';
   function startDrag(event: PointerEvent) {
     if (snapshot.locked || event.button !== 0 || event.detail > 1) return;

@@ -6,8 +6,9 @@ const params = new URLSearchParams(window.location.search);
 export const demoMode = params.get('demo') === '1';
 export const desktopMode = isTauri();
 export const initialSnapshot: AppSnapshot = {
+  sourceRevision: 0, historyRevision: 0,
   sessions: null, sessionError: null, quota: null, status: 'connecting', error: null, locked: false, overlayVisible: true,
-  settings: { distro: '', pollIntervalSecs: 60 }, version: '0.1.9',
+  settings: { source: 'wsl', distro: '', pollIntervalSecs: 60 }, version: '0.1.12',
 };
 const now = Math.floor(Date.now() / 1000);
 const demoSession = (id: string, title: string, project: string, completionId: string | null = null): SessionDetail =>
@@ -34,7 +35,7 @@ function publishDemo(): AppSnapshot {
 }
 
 async function command<T>(name: string, args?: Record<string, unknown>): Promise<T> {
-  if (!desktopMode) throw new Error('请在桌面应用中运行。浏览器无法连接 WSL 与本地额度记录。');
+  if (!desktopMode) throw new Error('请在桌面应用中运行，才能连接本地 Codex 并读取额度记录。');
   return invoke<T>(name, args);
 }
 export async function getSnapshot(): Promise<AppSnapshot> {
@@ -48,8 +49,8 @@ export async function subscribeState(callback: (snapshot: AppSnapshot) => void):
   if (!desktopMode) return () => {};
   return listen<AppSnapshot>('state-changed', event => callback(event.payload));
 }
-export async function getHistory(hours: number): Promise<HistoryPoint[]> {
-  if (!demoMode) return command('get_history', { hours });
+export async function getHistory(hours: number, revision: number): Promise<HistoryPoint[]> {
+  if (!demoMode) return command('get_history', { hours, revision });
   // 演示数据仅在明确 ?demo=1 时生成，生产模式始终读取 SQLite。
   const count = 96;
   return Array.from({ length: count }, (_, index) => {
@@ -63,7 +64,12 @@ export async function getHistory(hours: number): Promise<HistoryPoint[]> {
 }
 export async function updateSettings(settings: Settings): Promise<AppSnapshot> {
   if (!demoMode) return command('update_settings', { settings });
-  demoSnapshot = { ...demoSnapshot, settings };
+  const source = demoSnapshot.settings;
+  const changed = settings.source !== source.source || (settings.source === 'wsl' && settings.distro !== source.distro);
+  demoSnapshot = { ...demoSnapshot, settings,
+    sourceRevision: demoSnapshot.sourceRevision + Number(changed),
+    historyRevision: demoSnapshot.historyRevision + Number(changed),
+  };
   return publishDemo();
 }
 export async function refresh(): Promise<void> {
@@ -107,7 +113,7 @@ export function subscribeOverlayEvent<K extends keyof OverlayEvents>(name: K, ca
 }
 
 /** 浏览器与演示模式只做离屏验证，不向桌面托盘写入。 */
-export async function setTrayImage(rgba: Uint8ClampedArray): Promise<void> {
+export async function setTrayImage(rgba: Uint8ClampedArray, revision: number): Promise<void> {
   if (demoMode || !desktopMode) return;
-  await command('set_tray_image', { rgba: Array.from(rgba) });
+  await command('set_tray_image', { rgba: Array.from(rgba), revision });
 }

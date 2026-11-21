@@ -25,5 +25,5 @@ export function useSnapshot() {
     void connect();
     return () => { active = false; unsubscribe?.(); };
   }, []);
-  return { snapshot, setSnapshot };
+  return snapshot;
 }

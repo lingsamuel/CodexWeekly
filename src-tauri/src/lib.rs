@@ -6,27 +6,28 @@ mod commands;
 mod overlay_geometry;
 mod overlay_input;
 mod overlay_recovery;
+mod source;
 mod state;
 mod tray;
 mod windows;
 
-use limit_core::{settings::Settings, store::Store};
+use limit_core::{
+    settings::{Settings, SourceKind},
+    store::Store,
+};
+use source::CodexSource;
 use state::{AppData, AppState};
 use std::sync::Mutex;
 use tauri::{Manager, RunEvent};
 
 pub fn run() {
     let started_at = state::now();
-    if let Some(path) = std::env::args()
-        .skip(1)
-        .collect::<Vec<_>>()
-        .windows(2)
-        .find(|args| args[0] == "--diagnose-sessions")
-        .map(|args| args[1].clone())
-    {
+    let arguments: Vec<_> = std::env::args().skip(1).collect();
+    if let Some(path) = argument(&arguments, "--diagnose-sessions") {
         let result = tauri::async_runtime::block_on(async {
+            let source = diagnostic_source(&arguments)?;
             tokio::time::timeout(std::time::Duration::from_secs(35), async {
-                activity::ActivityClient::connect(&Settings::default(), started_at)
+                activity::ActivityClient::connect(&source, started_at)
                     .await?
                     .fetch_counts()
                     .await
@@ -56,14 +57,10 @@ pub fn run() {
         }
         std::process::exit(if result.is_ok() { 0 } else { 1 });
     }
-    if let Some(path) = std::env::args()
-        .skip(1)
-        .collect::<Vec<_>>()
-        .windows(2)
-        .find(|args| args[0] == "--diagnose")
-        .map(|args| args[1].clone())
-    {
-        let result = tauri::async_runtime::block_on(collector::fetch(&Settings::default()));
+    if let Some(path) = argument(&arguments, "--diagnose") {
+        let result = tauri::async_runtime::block_on(async {
+            collector::fetch(&diagnostic_source(&arguments)?).await
+        });
         let output = match &result {
             Ok(quota) => {
                 serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"ok":true,"quota":quota.sample})
@@ -102,13 +99,15 @@ pub fn run() {
             let store = Store::open(&directory.join("weekly.sqlite3"))?;
             let preferences = store.preferences()?;
             preferences.settings.validate()?;
-            let quota = store.latest()?;
-            let first_run = quota.is_none();
-            app.manage(AppState {
+            let first_run = store.latest()?.is_none();
+            let state = AppState {
                 data: Mutex::new(AppData {
                     store,
                     preferences,
-                    quota,
+                    source: None,
+                    source_revision: 0,
+                    history_revision: 0,
+                    quota: None,
                     status: "connecting",
                     error: None,
                     next_sample_starts_segment: true,
@@ -117,8 +116,14 @@ pub fn run() {
                 }),
                 refresh: tokio::sync::Notify::new(),
                 activity_refresh: tokio::sync::Notify::new(),
+                source_changed: tokio::sync::watch::channel(()).0,
                 shutdown: tokio::sync::Notify::new(),
-            });
+            };
+            {
+                let mut data = state.lock()?;
+                let _ = state.resolve_source(&mut data);
+            }
+            app.manage(state);
             tray::create(app.handle())?;
             windows::create_overlay(app.handle())?;
             if first_run {
@@ -144,6 +149,30 @@ pub fn run() {
             }
         }
     });
+}
+
+fn argument<'a>(arguments: &'a [String], key: &str) -> Option<&'a str> {
+    arguments
+        .windows(2)
+        .find(|args| args[0] == key)
+        .map(|args| args[1].as_str())
+}
+
+fn diagnostic_source(arguments: &[String]) -> Result<CodexSource, String> {
+    let source = match argument(arguments, "--source") {
+        None | Some("wsl") => SourceKind::Wsl,
+        Some("windows") => SourceKind::Windows,
+        Some(_) => return Err("诊断的 --source 应为 windows 或 wsl。".into()),
+    };
+    let settings = Settings {
+        source,
+        distro: argument(arguments, "--distro")
+            .unwrap_or_default()
+            .to_owned(),
+        ..Settings::default()
+    };
+    settings.validate()?;
+    CodexSource::resolve(&settings)
 }
 
 fn startup_failure(message: &str) -> ! {

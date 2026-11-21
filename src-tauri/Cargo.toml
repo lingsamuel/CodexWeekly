@@ -21,6 +21,7 @@ tauri-plugin-single-instance = "2"
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 futures-util = { version = "0.3", features = ["sink"] }
 tokio = { version = "1", features = ["process", "time", "sync", "io-util", "rt", "macros"] }
+winreg = "0.56"
 
 [target.'cfg(windows)'.dependencies.windows-sys]
 version = "0.61"

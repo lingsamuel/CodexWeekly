@@ -60,7 +60,7 @@ pub fn create(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .icon(tauri::image::Image::from_bytes(include_bytes!(
             "../icons/icon.png"
         ))?)
-        .tooltip("Codex Weekly · 正在连接 WSL")
+        .tooltip("Codex Weekly · 正在连接 Codex")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {

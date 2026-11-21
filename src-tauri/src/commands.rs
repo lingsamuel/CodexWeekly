@@ -1,6 +1,6 @@
 use crate::{
-    collector,
     overlay_input::HitRegion,
+    source,
     state::{broadcast, now, AppSnapshot, AppState},
     windows,
 };
@@ -13,11 +13,18 @@ pub fn get_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
 }
 
 #[tauri::command]
-pub fn get_history(hours: u32, state: State<'_, AppState>) -> Result<Vec<HistoryPoint>, String> {
+pub fn get_history(
+    hours: u32,
+    revision: u64,
+    state: State<'_, AppState>,
+) -> Result<Vec<HistoryPoint>, String> {
     if ![24, 168, 720].contains(&hours) {
         return Err("请选择 24 小时、7 天或 30 天。".into());
     }
     let data = state.lock()?;
+    if data.history_revision != revision {
+        return Ok(Vec::new());
+    }
     let Some(quota) = &data.quota else {
         return Ok(Vec::new());
     };
@@ -39,24 +46,30 @@ pub fn update_settings(
 ) -> Result<AppSnapshot, String> {
     settings.validate()?;
     let mut data = state.lock()?;
-    let changed_distro = data.preferences.settings.distro != settings.distro;
     let mut preferences = data.preferences.clone();
     preferences.settings = settings;
     data.store
         .save_preferences(&preferences)
         .map_err(|_| "设置保存失败，请检查应用数据目录。".to_string())?;
     data.preferences = preferences;
-    if changed_distro {
-        data.quota = None;
-        data.sessions = None;
-        data.session_error = None;
+    let previous = data.source_revision;
+    match state.resolve_source(&mut data) {
+        Ok(_) => {
+            data.status = "connecting";
+            data.error = None;
+        }
+        Err(error) => {
+            data.status = "offline";
+            data.error = Some(error);
+        }
     }
-    data.status = "connecting";
-    data.error = None;
     data.next_sample_starts_segment = true;
+    let changed = previous != data.source_revision;
     drop(data);
-    state.refresh.notify_one();
-    state.activity_refresh.notify_one();
+    if !changed {
+        state.refresh.notify_one();
+        state.activity_refresh.notify_one();
+    }
     broadcast(&app);
     state.snapshot()
 }
@@ -126,13 +139,21 @@ pub fn open_dashboard(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn list_distros() -> Result<Vec<String>, String> {
-    collector::list_distros().await
+    source::list_distros()
 }
 
 #[tauri::command]
-pub fn set_tray_image(rgba: Vec<u8>, app: AppHandle) -> Result<(), String> {
+pub fn set_tray_image(
+    rgba: Vec<u8>,
+    revision: u64,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     if rgba.len() != 64 * 64 * 4 {
         return Err("托盘图像必须为 64×64 RGBA。".into());
+    }
+    if state.lock()?.history_revision != revision {
+        return Ok(());
     }
     let tray = app.tray_by_id("main").ok_or("托盘尚未创建。")?;
     tray.set_icon(Some(tauri::image::Image::new_owned(rgba, 64, 64)))

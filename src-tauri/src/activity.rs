@@ -1,19 +1,15 @@
 use crate::{
-    collector::bridge_command,
+    source::{AppServerMode, CodexSource},
     state::{broadcast, now, AppState},
 };
 use futures_util::{SinkExt, StreamExt};
-use limit_core::{
-    activity::{
-        latest_completed_turn_id, parse_thread_page, summarize_threads, CompletionKey,
-        SessionCounts, SessionDetail, SessionThread,
-    },
-    settings::Settings,
+use limit_core::activity::{
+    latest_completed_turn_id, parse_thread_page, summarize_threads, CompletionKey, SessionCounts,
+    SessionDetail, SessionThread,
 };
 use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
-    process::Stdio,
     time::Duration,
 };
 use tauri::{AppHandle, Manager};
@@ -35,13 +31,12 @@ pub(crate) struct ActivityClient {
 }
 
 impl ActivityClient {
-    pub(crate) async fn connect(settings: &Settings, started_at: i64) -> Result<Self, String> {
-        let mut process = bridge_command(settings, "--daemon-proxy")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+    pub(crate) async fn connect(source: &CodexSource, started_at: i64) -> Result<Self, String> {
+        let mut process = source
+            .app_server(AppServerMode::DaemonProxy)
+            .await?
             .spawn()
-            .map_err(|_| "无法启动 WSL 会话状态代理。".to_string())?;
+            .map_err(|_| source.launch_error())?;
         let reader = process.stdout.take().ok_or("无法读取会话代理。")?;
         let writer = process.stdin.take().ok_or("无法连接会话代理。")?;
         let (socket, _) = tokio::time::timeout(
@@ -221,75 +216,92 @@ impl ActivityClient {
 
 pub fn start(app: AppHandle, started_at: i64) {
     tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let mut source_changed = state.source_changed.subscribe();
         let mut client: Option<ActivityClient> = None;
-        let mut distro = String::new();
-        let mut seen_completions = HashSet::new();
+        let mut client_revision = 0;
+        let mut seen_completions = HashMap::<CodexSource, HashSet<_>>::new();
         loop {
-            let state = app.state::<AppState>();
-            let settings = match state.lock() {
-                Ok(data) => data.preferences.settings.clone(),
-                Err(_) => return,
+            let (source, revision) = {
+                let Ok(data) = state.lock() else {
+                    return;
+                };
+                source_changed.borrow_and_update();
+                (data.source.clone(), data.source_revision)
             };
-            if distro != settings.distro {
+            if client_revision != revision {
                 client = None;
+                client_revision = revision;
             }
-            let result = tokio::select! {
-                result = async {
-                    let mut counts = tokio::time::timeout(Duration::from_secs(35), async {
-                        if client.is_none() {
-                            // 重连或切换发行版仍沿用程序入口的时刻，不截断本次运行已完成的任务。
-                            client = Some(ActivityClient::connect(&settings, started_at).await?);
-                            distro = settings.distro.clone();
-                        }
-                        client.as_mut().unwrap().fetch_counts().await
-                    })
-                    .await
-                    .unwrap_or_else(|_| Err("读取 Codex 会话统计超时。".into()))?;
-                    if let Some(client) = &mut client {
-                        // 项目名称可独立降级为工作目录。查询失败时保留计数和标题。
-                        let _ = tokio::time::timeout(Duration::from_secs(2), client.fill_projects(&mut counts)).await;
-                    }
-                    Ok(counts)
-                } => result,
-                _ = state.shutdown.notified() => return,
-            };
-            if result.is_err() {
-                client = None;
-            }
-            if let Ok(mut data) = state.lock() {
-                if data.preferences.settings == settings {
-                    match result {
-                        Ok(counts) => {
-                            if counts.record_unread_completions(&mut seen_completions)
-                                && data.preferences.completion_sound
-                            {
-                                // 异步播放结束前 Windows 仍可能读取音频，内置数据在进程退出前一直有效。
-                                unsafe {
-                                    PlaySoundA(
-                                        COMPLETION_CHIME.as_ptr(),
-                                        std::ptr::null_mut(),
-                                        SND_ASYNC | SND_MEMORY | SND_NODEFAULT,
-                                    );
+            if let Some(source) = source {
+                let result = tokio::select! {
+                    result = refresh_counts(&mut client, &source, started_at) => result,
+                    _ = source_changed.changed() => continue,
+                    _ = state.shutdown.notified() => return,
+                };
+                if result.is_err() {
+                    client = None;
+                }
+                if let Ok(mut data) = state.lock() {
+                    if data.source_revision == revision {
+                        match result {
+                            Ok(counts) => {
+                                let seen = seen_completions.entry(source).or_default();
+                                if counts.record_unread_completions(seen)
+                                    && data.preferences.completion_sound
+                                {
+                                    // 异步播放结束前 Windows 仍可能读取音频，内置数据在进程退出前一直有效。
+                                    unsafe {
+                                        PlaySoundA(
+                                            COMPLETION_CHIME.as_ptr(),
+                                            std::ptr::null_mut(),
+                                            SND_ASYNC | SND_MEMORY | SND_NODEFAULT,
+                                        );
+                                    }
                                 }
+                                data.session_error = counts.unread_completed.is_none().then(|| {
+                                    "Codex 完成时间或未读状态暂不可用，红色气泡已隐藏。".into()
+                                });
+                                data.sessions = Some(counts);
                             }
-                            data.session_error = counts.unread_completed.is_none().then(|| {
-                                "Codex 完成时间或未读状态暂不可用，红色气泡已隐藏。".into()
-                            });
-                            data.sessions = Some(counts);
-                        }
-                        Err(error) => {
-                            data.sessions = None;
-                            data.session_error = Some(error);
+                            Err(error) => {
+                                data.sessions = None;
+                                data.session_error = Some(error);
+                            }
                         }
                     }
                 }
+                broadcast(&app);
             }
-            broadcast(&app);
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(15)) => {},
                 _ = state.activity_refresh.notified() => {},
+                _ = source_changed.changed() => {},
                 _ = state.shutdown.notified() => return,
             }
         }
     });
+}
+
+async fn refresh_counts(
+    client: &mut Option<ActivityClient>,
+    source: &CodexSource,
+    started_at: i64,
+) -> Result<SessionCounts, String> {
+    let mut counts = tokio::time::timeout(Duration::from_secs(35), async {
+        // 重连和切换来源都沿用程序入口的时间，保留本次运行已经完成的任务。
+        let client = match &mut *client {
+            Some(client) => client,
+            slot => slot.insert(ActivityClient::connect(source, started_at).await?),
+        };
+        client.fetch_counts().await
+    })
+    .await
+    .unwrap_or_else(|_| Err("读取 Codex 会话统计超时。".into()))?;
+    if let Some(client) = client {
+        // 项目名称可独立降级为工作目录。查询失败时保留计数和标题。
+        let _ =
+            tokio::time::timeout(Duration::from_secs(2), client.fill_projects(&mut counts)).await;
+    }
+    Ok(counts)
 }

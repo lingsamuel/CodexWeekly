@@ -10,8 +10,8 @@ export interface SessionGroup {
   sessions: SessionDetail[];
 }
 
-export function useSessionDetails(sessions: SessionCounts | null, visible: boolean, distro: string) {
-  const previous = useRef({ distro, known: {} as Partial<Record<SessionKind, Set<string>>> });
+export function useSessionDetails(sessions: SessionCounts | null, visible: boolean, sourceRevision: number) {
+  const previous = useRef({ sourceRevision, known: {} as Partial<Record<SessionKind, Set<string>>> });
   const automaticTimer = useRef<number>(undefined);
   const hoverTimer = useRef<number>(undefined);
   const hoverTarget = useRef<OverlayTarget | null>(null);
@@ -19,9 +19,9 @@ export function useSessionDetails(sessions: SessionCounts | null, visible: boole
   const [hovered, setHovered] = useState(NO_KINDS);
 
   useEffect(() => {
-    const changedDistro = previous.current.distro !== distro;
-    if (changedDistro) previous.current = { distro, known: {} };
-    if (!visible || !sessions || changedDistro) {
+    const changedSource = previous.current.sourceRevision !== sourceRevision;
+    if (changedSource) previous.current = { sourceRevision, known: {} };
+    if (!visible || !sessions || changedSource) {
       window.clearTimeout(automaticTimer.current);
       window.clearTimeout(hoverTimer.current);
       hoverTarget.current = null;
@@ -46,7 +46,7 @@ export function useSessionDetails(sessions: SessionCounts | null, visible: boole
     if (hoverTarget.current === 'details') setHovered(includeAdditions);
     window.clearTimeout(automaticTimer.current);
     automaticTimer.current = window.setTimeout(() => setAutomatic(NO_KINDS), AUTO_OPEN_MS);
-  }, [sessions, visible, distro]);
+  }, [sessions, visible, sourceRevision]);
 
   useEffect(() => () => {
     window.clearTimeout(automaticTimer.current);
@@ -54,7 +54,7 @@ export function useSessionDetails(sessions: SessionCounts | null, visible: boole
   }, []);
 
   const groups = useMemo(() => {
-    if (!visible || !sessions) return [];
+    if (!visible || !sessions || previous.current.sourceRevision !== sourceRevision) return [];
     const details = { working: sessions.workingDetails, completed: sessions.unreadCompletedDetails };
     return kinds.flatMap(kind => {
       const items = details[kind];
@@ -62,7 +62,7 @@ export function useSessionDetails(sessions: SessionCounts | null, visible: boole
         ? [{ kind, sessions: items }]
         : [];
     });
-  }, [sessions, visible, automatic, hovered]);
+  }, [sessions, visible, sourceRevision, automatic, hovered]);
 
   function hover(target: OverlayTarget | null, crossesRing: boolean) {
     if (!visible) return;

@@ -17,12 +17,13 @@ pub struct QuotaSample {
 #[derive(Clone, Debug)]
 pub struct ParsedQuota {
     pub account_key: String,
+    pub personal_email_key: Option<String>,
     pub sample: QuotaSample,
 }
 
 #[derive(Debug, Error)]
 pub enum QuotaError {
-    #[error("Codex 尚未提供可识别的 Weekly 额度，请确认当前 WSL 登录使用 ChatGPT 订阅。")]
+    #[error("Codex 尚未提供可识别的 Weekly 额度，请确认所选实例已登录具有 ChatGPT 订阅的账号。")]
     MissingWeekly,
     #[error("Codex 返回的周额度格式无效；已保留上次有效读数。")]
     InvalidWindow,
@@ -80,11 +81,12 @@ pub fn parse_quota(response: &Value, recorded_at: i64) -> Result<ParsedQuota, Qu
                 .and_then(Value::as_str)
                 .filter(|id| !id.is_empty())
                 .ok_or(QuotaError::MissingIdentity)?;
-            format!("{:x}", Sha256::digest(id.as_bytes()))
+            hash_account_id(id)
         }
     };
     Ok(ParsedQuota {
         account_key,
+        personal_email_key: None,
         sample: QuotaSample {
             recorded_at,
             remaining_percent: 100.0 - used,
@@ -92,4 +94,8 @@ pub fn parse_quota(response: &Value, recorded_at: i64) -> Result<ParsedQuota, Qu
             window_minutes: WEEK_MINUTES,
         },
     })
+}
+
+pub(crate) fn hash_account_id(id: &str) -> String {
+    format!("{:x}", Sha256::digest(id.as_bytes()))
 }

@@ -35,11 +35,13 @@ async function verifySessionDetails(browser) {
     const callbacks = new Map();
     let callbackId = 0;
     let snapshot = {
+      sourceRevision: 1, historyRevision: 1,
       sessions: { working: working.length, unreadCompleted: completed.length, workingDetails: working, unreadCompletedDetails: completed, observedAt: 1 },
       sessionError: null, quota: null, status: 'online', error: null, locked: false, overlayVisible: true,
-      settings: { distro: '', pollIntervalSecs: 60 }, version: 'test',
+      settings: { source: 'wsl', distro: '', pollIntervalSecs: 60 }, version: 'test',
     };
     const calls = [];
+    const historyRequests = [];
     const emit = (event, payload) => {
       for (const id of listeners.get(event) ?? []) callbacks.get(id)?.({ event, id, payload });
     };
@@ -60,6 +62,13 @@ async function verifySessionDetails(browser) {
         }
         calls.push({ command, args });
         if (command === 'get_snapshot') return snapshot;
+        if (command === 'list_distros') return [];
+        if (command === 'get_history') return new Promise(resolve => { historyRequests.push({ revision: args.revision, resolve }); });
+        if (command === 'update_settings') {
+          snapshot = { ...snapshot, settings: args.settings, sourceRevision: 2, historyRevision: 2, quota: null, sessions: null, status: 'connecting' };
+          emit('state-changed', snapshot);
+          return snapshot;
+        }
         if (command === 'set_overlay_details') {
           await window.__resizeOverlay(args.expanded);
           return 'right';
@@ -68,6 +77,12 @@ async function verifySessionDetails(browser) {
     };
     window.__sessionFixture = {
       calls, emit,
+      hasPendingHistory: revision => historyRequests.some(request => request.revision === revision),
+      completeHistory(revision, points) {
+        for (let i = historyRequests.length - 1; i >= 0; i--) {
+          if (historyRequests[i].revision === revision) historyRequests.splice(i, 1)[0].resolve(points);
+        }
+      },
       publish({ working, completed, sessions, ...state }) {
         const current = snapshot.sessions;
         snapshot = {
@@ -205,11 +220,11 @@ async function verifySessionDetails(browser) {
   await publish({ working: replacement.slice(0, 1), completed: [detail('c0', '检查第二个回执', '运维', null, 'turn-2')] });
   await badge('working').waitFor();
   assert.equal(await panel.count(), 0, '恢复连接后，同一批会话不会再次弹出');
-  await publish({ sessions: null, settings: { distro: 'Debian', pollIntervalSecs: 60 } });
+  await publish({ sessions: null, sourceRevision: 2, settings: { source: 'windows', distro: '', pollIntervalSecs: 60 } });
   await badge('working').waitFor({ state: 'hidden' });
   await publish({ working, completed });
   await badge('working').waitFor();
-  assert.equal(await panel.count(), 0, '切换发行版后，现有会话只建立新基准');
+  assert.equal(await panel.count(), 0, '切换到 Windows 后，现有会话只建立新基准');
 
   await publish({ working: replacement });
   await panel.getByText('验证新会话').waitFor();
@@ -219,6 +234,35 @@ async function verifySessionDetails(browser) {
   await page.clock.fastForward(8100);
   assert.equal(await panel.getByText('验证新会话').count(), 1);
   assert.equal(await panel.getByText('悬停时新增回执').count(), 1, '悬停过程中新增的分类在计时结束后仍保持展开');
+
+  await page.setViewportSize({ width: 1040, height: 760 });
+  await page.goto('http://127.0.0.1:1420/');
+  const source = page.getByLabel('Codex 来源');
+  await source.waitFor();
+  const quota = { recordedAt: Math.floor(clockStart.getTime() / 1000), remainingPercent: 73, resetsAt: null, windowMinutes: 10080 };
+  const points = [{ ...quota, recordedAt: quota.recordedAt - 60, segment: 'test' }, { ...quota, segment: 'test' }];
+  const waitHistory = revision => page.waitForFunction(revision => window.__sessionFixture.hasPendingHistory(revision), revision, { polling: 50 });
+  const completeHistory = revision => page.evaluate(([revision, points]) => window.__sessionFixture.completeHistory(revision, points), [revision, points]);
+  await publish({ quota });
+  await waitHistory(1);
+  await completeHistory(1);
+  const chart = page.getByRole('img', { name: /最近 24 小时/ });
+  await chart.waitFor();
+  await publish({ quota: { ...quota, recordedAt: quota.recordedAt + 1 } });
+  await waitHistory(1);
+
+  await source.selectOption('windows');
+  await page.getByRole('button', { name: '保存设置' }).click();
+  await chart.waitFor({ state: 'hidden' });
+  await completeHistory(1);
+  assert.equal(await chart.count(), 0, '切换后不显示旧请求返回的历史');
+  await publish({ quota, historyRevision: 3, status: 'online' });
+  await waitHistory(3);
+  await completeHistory(3);
+  await chart.waitFor();
+  const saved = await page.evaluate(() => window.__sessionFixture.calls.find(call => call.command === 'update_settings'));
+  assert.equal(saved.args.settings.source, 'windows', '没有 WSL 发行版时也可以保存 Windows 本机来源');
+
   assert.deepEqual(errors, []);
   await page.close();
 }

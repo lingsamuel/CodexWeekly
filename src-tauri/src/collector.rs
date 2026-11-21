@@ -1,69 +1,31 @@
-use crate::state::{broadcast, now, AppState};
-use limit_core::{
-    quota::{parse_quota, ParsedQuota},
-    settings::Settings,
+use crate::{
+    source::{AppServerMode, CodexSource},
+    state::{broadcast, now, AppState},
 };
-use serde_json::Value;
-use std::{process::Stdio, time::Duration};
+use limit_core::{quota::ParsedQuota, quota_rpc::read_quota};
+use std::time::Duration;
 use tauri::{AppHandle, Manager};
-use tokio::{io::AsyncReadExt, process::Command};
+use tokio::io::BufReader;
 
-const BRIDGE: &str = include_str!("../../scripts/wsl_bridge.py");
-const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-fn wsl_command(settings: &Settings) -> Command {
-    let mut command = Command::new("wsl.exe");
-    command.creation_flags(CREATE_NO_WINDOW).kill_on_drop(true);
-    if !settings.distro.is_empty() {
-        command.args(["--distribution", &settings.distro]);
-    }
-    command.args(["--cd", "~"]);
-    command
-}
-
-pub(crate) fn bridge_command(settings: &Settings, mode: &str) -> Command {
-    let mut command = wsl_command(settings);
-    command.args([
-        "--exec",
-        "python3",
-        "-u",
-        "-c",
-        BRIDGE,
-        mode,
-        "--restore-shell-environment",
-    ]);
-    command
-}
-
-pub async fn fetch(settings: &Settings) -> Result<ParsedQuota, String> {
-    let mut child = bridge_command(settings, "--watch-parent")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+pub async fn fetch(source: &CodexSource) -> Result<ParsedQuota, String> {
+    let mut child = source
+        .app_server(AppServerMode::Quota)
+        .await?
         .spawn()
-        .map_err(|_| "无法启动 wsl.exe，请确认 Windows 已启用 WSL。".to_string())?;
-    // 保持 stdin 管道直到采集结束；退出/取消时 EOF 会通知 WSL 桥接回收进程组。
-    let _parent_pipe = child.stdin.take();
-    let stdout = child.stdout.take().ok_or("无法读取 WSL 输出。")?;
-    let mut bytes = Vec::new();
-    let status = tokio::time::timeout(Duration::from_secs(30), async {
-        stdout.take(2 * 1024 * 1024).read_to_end(&mut bytes).await?;
-        child.wait().await
-    })
+        .map_err(|_| source.launch_error())?;
+    let mut writer = child.stdin.take().ok_or("无法连接 Codex app-server。")?;
+    let mut reader = BufReader::new(child.stdout.take().ok_or("无法读取 Codex 输出。")?);
+    let result = tokio::time::timeout(
+        Duration::from_secs(25),
+        read_quota(&mut reader, &mut writer, source.cache_key(), now),
+    )
     .await
-    .map_err(|_| "WSL 启动或读取超时，请检查该发行版能否正常启动。".to_string())?
-    .map_err(|_| "WSL 连接已断开，请稍后重试。".to_string())?;
-    let response: Value = serde_json::from_slice(&bytes).map_err(|_| {
-        "WSL 未能启动额度桥接。请确认所选发行版已安装 Python 3 和 Codex，并能正常运行。".to_string()
-    })?;
-    if let Some(error) = response.get("error").and_then(Value::as_str) {
-        return Err(error.to_string());
-    }
-    let result = response
-        .get("result")
-        .filter(|_| status.success())
-        .ok_or_else(|| "Codex 返回了不完整的额度响应。".to_string())?;
-    parse_quota(result, now()).map_err(|error| error.to_string())
+    .unwrap_or_else(|_| Err("读取 Codex 额度超时，请检查所选实例的网络。".into()));
+    // WSL 通过父管道 EOF 回收进程组，原生 app-server 也可正常退出。
+    drop(writer);
+    drop(reader);
+    let _ = tokio::time::timeout(Duration::from_secs(3), child.wait()).await;
+    result
 }
 
 pub fn start(app: AppHandle) {
@@ -79,25 +41,50 @@ pub fn start(app: AppHandle) {
         }
     });
     tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let mut source_changed = state.source_changed.subscribe();
         loop {
-            let state = app.state::<AppState>();
-            let settings = match state.lock() {
-                Ok(data) => data.preferences.settings.clone(),
-                Err(_) => return,
+            let (source, revision, changed) = {
+                let Ok(mut data) = state.lock() else {
+                    return;
+                };
+                let previous = data.source_revision;
+                let source = state.resolve_source(&mut data);
+                source_changed.borrow_and_update();
+                (
+                    source,
+                    data.source_revision,
+                    previous != data.source_revision,
+                )
             };
-            let result = tokio::select! {
-                result = fetch(&settings) => result,
-                _ = state.shutdown.notified() => return,
+            if changed {
+                broadcast(&app);
+            }
+            let result = match source {
+                Ok(source) => tokio::select! {
+                    result = fetch(&source) => result.map(|quota| (source, quota)),
+                    _ = source_changed.changed() => continue,
+                    _ = state.shutdown.notified() => return,
+                },
+                Err(error) => Err(error),
             };
             if let Ok(mut data) = state.lock() {
-                // 设置变更期间发出的旧请求不能覆盖新发行版的状态。
-                if data.preferences.settings == settings {
+                if data.source_revision == revision {
                     match result {
-                        Ok(quota) => {
+                        Ok((source, quota)) => {
                             let persisted = data
                                 .store
-                                .record_with_boundary(&quota, data.next_sample_starts_segment)
+                                .record_for_source(
+                                    source.cache_key(),
+                                    &quota,
+                                    data.next_sample_starts_segment,
+                                )
                                 .and_then(|_| data.store.prune(now() - 90 * 86400));
+                            if data.quota.as_ref().map(|last| &last.account_key)
+                                != Some(&quota.account_key)
+                            {
+                                data.history_revision += 1;
+                            }
                             data.quota = Some(quota);
                             match persisted {
                                 Ok(()) => {
@@ -125,47 +112,13 @@ pub fn start(app: AppHandle) {
                 .lock()
                 .map(|data| data.preferences.settings.poll_interval_secs)
                 .unwrap_or(60);
-            // 单一循环串行处理采集；Notify 合并刷新请求，不会创建并行 app-server。
+            // 单一循环串行采集。来源切换立即取消旧连接，普通刷新请求合并到下一轮。
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(seconds)) => {},
+                _ = source_changed.changed() => {},
                 _ = state.refresh.notified() => {},
                 _ = state.shutdown.notified() => return,
             }
         }
     });
-}
-
-pub async fn list_distros() -> Result<Vec<String>, String> {
-    let output = tokio::time::timeout(
-        Duration::from_secs(10),
-        Command::new("wsl.exe")
-            .creation_flags(CREATE_NO_WINDOW)
-            .kill_on_drop(true)
-            .args(["--list", "--quiet"])
-            .output(),
-    )
-    .await
-    .map_err(|_| "获取 WSL 发行版列表超时。".to_string())?
-    .map_err(|_| "无法启动 wsl.exe。".to_string())?;
-    if !output.status.success() {
-        return Err("无法获取 WSL 发行版列表，请检查 WSL 安装。".into());
-    }
-    // wsl.exe 的管理命令使用 UTF-16LE，而 Linux 子进程输出为 UTF-8。
-    let text = if output.stdout.contains(&0) {
-        let words: Vec<u16> = output
-            .stdout
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .collect();
-        String::from_utf16_lossy(&words)
-    } else {
-        String::from_utf8_lossy(&output.stdout).into_owned()
-    };
-    Ok(text
-        .lines()
-        .map(|line| line.trim().trim_start_matches('\u{feff}').to_string())
-        .filter(|line| !line.is_empty())
-        .collect())
 }
