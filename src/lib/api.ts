@@ -8,7 +8,7 @@ export const desktopMode = isTauri();
 export const initialSnapshot: AppSnapshot = {
   sourceRevision: 0, historyRevision: 0,
   sessions: null, sessionError: null, quota: null, status: 'connecting', error: null, locked: false, overlayVisible: true,
-  settings: { source: 'wsl', distro: '', pollIntervalSecs: 60 }, version: '0.1.12',
+  settings: { source: 'wsl', distro: '', pollIntervalSecs: 60 }, version: '0.1.13',
 };
 const now = Math.floor(Date.now() / 1000);
 const demoSession = (id: string, title: string, project: string, completionId: string | null = null): SessionDetail =>

@@ -112,6 +112,34 @@ async function verifySessionDetails(browser) {
   assert.equal(await panel.count(), 0, '首个快照只建立基准');
   assert.deepEqual((await regions())?.map(region => region.target), ['working', 'completed']);
 
+  const paceQuota = { recordedAt: clockStart.getTime() / 1000, remainingPercent: 70, resetsAt: clockStart.getTime() / 1000 + 6 * 86400, windowMinutes: 10080 };
+  const paceStatus = page.locator('.overlay-status');
+  const pointer = page.locator('.ring-pace-pointer');
+  const ringStop = page.locator('.ring-value-gradient stop').first();
+  await publish({ quota: paceQuota });
+  await paceStatus.getByText('用量稍快', { exact: true }).waitFor({ timeout: 2000 });
+  assert.equal(await page.locator('.ring-day-tick').count(), 7);
+  const rotation = Number((await pointer.getAttribute('transform')).match(/rotate\(([^ ]+)/)[1]);
+  assert.ok(Math.abs(rotation - 360 / 7) < .01);
+  const onlineRingColor = await ringStop.evaluate(stop => getComputedStyle(stop).stopColor);
+  await page.screenshot({ path: path.join(output, 'overlay-quota-pace.png'), omitBackground: true });
+  await publish({ status: 'offline' });
+  await paceStatus.getByText('同步失败', { exact: true }).waitFor();
+  const failedRingColor = await ringStop.evaluate(stop => getComputedStyle(stop).stopColor);
+  const [red, green, blue] = failedRingColor.match(/\d+/g).map(Number);
+  assert.ok(red > green && red > blue, '同步失败时，实际余量弧使用红色渐变');
+  await page.screenshot({ path: path.join(output, 'overlay-quota-sync-failed.png'), omitBackground: true });
+  await publish({ status: 'online', quota: { ...paceQuota, remainingPercent: 85 } });
+  await paceStatus.getByText('用量平稳', { exact: true }).waitFor();
+  assert.equal(await ringStop.evaluate(stop => getComputedStyle(stop).stopColor), onlineRingColor);
+  await publish({ status: 'offline', quota: null });
+  await paceStatus.getByText('同步失败', { exact: true }).waitFor();
+  await pointer.waitFor({ state: 'detached' });
+  assert.equal(await page.locator('.ring-value').count(), 0);
+  await publish({ status: 'online' });
+  await paceStatus.locator('span:not(.status-dot)').waitFor({ state: 'detached' });
+  assert.equal(await paceStatus.textContent(), '');
+
   await badge('working').hover({ force: true });
   await panel.getByText('同步部署状态').waitFor({ timeout: 2000 });
   assert.equal(page.viewportSize().width, 464);
@@ -333,11 +361,16 @@ async function verifyProductionCsp(browser) {
     assert.ok(probe.renders.some(render => render.typed && render.transparentCorner && render.opaque > 1000));
     await productionPage.screenshot({ path: path.join(output, 'production-csp-overlay.png'), omitBackground: true });
     assert.equal(await productionPage.locator('.ring-caption').textContent(), '3天0小时后重置');
+    const pointer = productionPage.locator('.ring-pace-pointer');
+    const pointerBefore = await pointer.getAttribute('transform');
     await productionPage.clock.fastForward(3600_000);
     await productionPage.getByText('2天23小时后重置', { exact: true }).waitFor();
+    assert.notEqual(await pointer.getAttribute('transform'), pointerBefore);
     assert.equal(await productionPage.evaluate(() => window.__trayCspProbe.renders.length), probe.renders.length);
     await productionPage.clock.fastForward(71 * 3600_000);
     await productionPage.getByText('等待新的额度窗口', { exact: true }).waitFor();
+    assert.equal(await productionPage.locator('.ring-pace-pointer').count(), 0);
+    assert.equal(await productionPage.locator('.overlay-status').textContent(), '');
     return { cspViolations: probe.violations.length, automaticRgbaBytes: probe.renders.at(-1).bytes, blobsRevoked: probe.blobsRevoked };
   } finally {
     await context.close();
@@ -433,13 +466,15 @@ try {
     try { await renderTrayImage(source, 73, false, controller.signal); }
     catch (error) { abortName = error.name; }
     finally { URL.createObjectURL = originalCreate; URL.revokeObjectURL = originalRevoke; }
-    return { length: rgba.length, typed: rgba instanceof Uint8ClampedArray, alphaCorner: rgba[3], darkCenter, greenRing, svg, fontAvailable: document.fonts.check('700 82px Arial'), created, revoked, abortName };
+    const trayScale = new DOMParser().parseFromString(svg, 'image/svg+xml').querySelector('.ring-window-scale');
+    return { length: rgba.length, typed: rgba instanceof Uint8ClampedArray, alphaCorner: rgba[3], darkCenter, greenRing, svg, hasScale: trayScale !== null, fontAvailable: document.fonts.check('700 82px Arial'), created, revoked, abortName };
   });
   assert.equal(tray.length, 64 * 64 * 4);
   assert.equal(tray.typed, true);
   assert.equal(tray.alphaCorner, 0);
   assert.ok(tray.darkCenter > 100);
   assert.ok(tray.greenRing > 100);
+  assert.equal(tray.hasScale, false);
   assert.equal(tray.fontAvailable, true);
   assert.match(tray.svg, /url\(#/);
   assert.doesNotMatch(tray.svg, /url\(["']?https?:/);

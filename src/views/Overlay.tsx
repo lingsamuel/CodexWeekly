@@ -1,7 +1,7 @@
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from 'react';
 import type { PointerEvent } from 'react';
 import { beginDrag, demoMode, desktopMode, openDashboard, setOverlayHitRegions, setTrayImage, subscribeOverlayEvent } from '../lib/api';
-import { dateTime, errorMessage, resetLabel } from '../lib/format';
+import { errorMessage, quotaPace, resetLabel } from '../lib/format';
 import { useOverlayDetailsWindow } from '../lib/useOverlayDetailsWindow';
 import { useSessionDetails } from '../lib/useSessionDetails';
 import type { SessionGroup } from '../lib/useSessionDetails';
@@ -24,6 +24,7 @@ export function Overlay() {
   const lastHitRegions = useRef('');
   const roundedQuota = trayPercent(snapshot.quota?.remainingPercent);
   const stale = snapshot.status !== 'online';
+  const syncFailed = snapshot.status === 'offline';
   const [actionError, setActionError] = useState<string | null>(null);
   const showError = (error: unknown) => setActionError(errorMessage(error));
   const { groups, hover } = useSessionDetails(snapshot.sessions, snapshot.overlayVisible, snapshot.sourceRevision);
@@ -104,7 +105,9 @@ export function Overlay() {
     });
     return () => controller.abort();
   }, [roundedQuota, stale, snapshot.historyRevision]);
-  const status = snapshot.status === 'online' ? `${dateTime(snapshot.quota?.recordedAt)} 已同步` : snapshot.status === 'connecting' ? '正在连接' : snapshot.quota ? '离线 · 上次读数' : '离线 · 尚无读数';
+  const pace = quotaPace(snapshot.quota, now);
+  const status = syncFailed ? '同步失败' : stale ? '正在连接' : pace?.label;
+  const dragHint = snapshot.locked ? '已锁定，可从会话气泡拖动' : '拖动调整位置，双击打开面板';
   function startDrag(event: PointerEvent) {
     if (snapshot.locked || event.button !== 0 || event.detail > 1) return;
     void beginDrag().catch(showError);
@@ -118,14 +121,17 @@ export function Overlay() {
   }
   return <main className={`overlay-window overlay-window--${side}`} hidden={!snapshot.overlayVisible} onContextMenu={event => event.preventDefault()}>
     <div ref={ringHost} className={`overlay-widget ${snapshot.locked ? 'is-locked' : ''}`}
-      title={actionError ?? snapshot.error ?? `${snapshot.locked ? '已锁定，可从会话气泡拖动' : '拖动调整位置，双击打开面板'} · ${status}`}
+      title={actionError ?? snapshot.error ?? (status ? `${dragHint} · ${status}` : dragHint)}
       onPointerDown={startDrag} onDoubleClick={() => { if (!snapshot.locked) void openDashboard().catch(showError); }}>
-      <QuotaRing value={snapshot.quota?.remainingPercent} variant="overlay" stale={snapshot.status !== 'online'} caption={resetLabel(snapshot.quota?.resetsAt, 'countdown', now)} />
+      <QuotaRing value={snapshot.quota?.remainingPercent} variant="overlay" stale={stale} syncFailed={syncFailed}
+        caption={resetLabel(snapshot.quota?.resetsAt, 'countdown', now)} elapsedFraction={pace?.elapsedFraction} />
       <SessionBadge ref={workingBadge} count={workingCount} kind="working" onPointerDown={startBadgeDrag}
         onPointerEnter={() => hoverFromDom('working')} onPointerLeave={() => hoverFromDom(null)} />
       <SessionBadge ref={completedBadge} count={completedCount} kind="completed" onPointerDown={startBadgeDrag}
         onPointerEnter={() => hoverFromDom('completed')} onPointerLeave={() => hoverFromDom(null)} />
-      <div className={`overlay-status status-${snapshot.status}`}><span className="status-dot" />{status}</div>
+      <div className={`overlay-status status-${snapshot.status}`} aria-live="polite">
+        <span className="status-dot" role="img" aria-label="已同步" aria-hidden={stale} />{status && <span>{status}</span>}
+      </div>
     </div>
     {expanded && <SessionDetails groups={wantsDetails ? groups : lastGroups} visible={panelVisible} regionRef={detailsRegion} scrollRef={detailsScroll}
       onPointerEnter={() => hoverFromDom('details')} onPointerLeave={() => hoverFromDom(null)} />}

@@ -8,6 +8,7 @@ export function trayPercent(value: number | undefined): number | undefined {
 /** 从主圆环复制几何和渐变，仅把网页 CSS 固化为独立 SVG 的表现属性。 */
 export function serializeTraySvg(source: SVGSVGElement, value: number | undefined, stale: boolean): string {
   const clone = source.cloneNode(true) as SVGSVGElement;
+  clone.querySelector('.ring-window-scale')?.remove();
   clone.setAttribute('xmlns', svgNamespace);
   clone.setAttribute('width', String(TRAY_IMAGE_SIZE));
   clone.setAttribute('height', String(TRAY_IMAGE_SIZE));
